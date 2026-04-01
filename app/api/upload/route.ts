@@ -4,8 +4,12 @@ import path from 'path'
 import getDb from '@/lib/db'
 import { extractPdfText } from '@/lib/pdf'
 import { analyzeAccord25 } from '@/lib/ai'
+import { requireAuth } from '@/lib/auth'
 
 export async function POST(request: NextRequest) {
+  const user = requireAuth(request)
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
   try {
     const formData = await request.formData()
 
@@ -14,6 +18,12 @@ export async function POST(request: NextRequest) {
     const tier = formData.get('tier') as string
     const accord25File = formData.get('accord25') as File | null
     const policyFile = formData.get('policy') as File | null
+    const procoreProjectId = (formData.get('procore_project_id') as string)?.trim() || null
+    const procoreContractId = (formData.get('procore_contract_id') as string)?.trim() || null
+
+    // Pre-extracted text sent from the client (offloads PDF parsing to uploader's browser)
+    const preExtractedAccord25 = (formData.get('accord25_text') as string) || ''
+    const preExtractedPolicy = (formData.get('policy_text') as string) || ''
 
     if (!name || !accord25File) {
       return NextResponse.json({ error: 'Name and Accord 25 file are required' }, { status: 400 })
@@ -32,7 +42,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Create submission
-    const submissionResult = db.prepare('INSERT INTO submissions (sub_id, status) VALUES (?, ?)').run(sub.id, 'reviewing')
+    const submissionResult = db.prepare(
+      'INSERT INTO submissions (sub_id, status, procore_project_id, procore_contract_id) VALUES (?, ?, ?, ?)'
+    ).run(sub.id, 'reviewing', procoreProjectId, procoreContractId)
     const submissionId = submissionResult.lastInsertRowid as number
 
     const savedPaths: { accord25: string; policy?: string } = { accord25: '' }
@@ -58,25 +70,33 @@ export async function POST(request: NextRequest) {
         .run(submissionId, 'policy', policyFile.name, policyPath)
     }
 
-    // Extract PDF text
-    let accord25Text = ''
-    let policyText: string | null = null
-    try {
-      accord25Text = await extractPdfText(savedPaths.accord25)
-      db.prepare('UPDATE documents SET extracted_text = ?, processed_at = datetime(\'now\') WHERE submission_id = ? AND doc_type = ?')
-        .run(accord25Text, submissionId, 'accord25')
-    } catch {
-      accord25Text = '[PDF text extraction failed]'
+    // Use pre-extracted text from client if available (offloads processing to uploader's machine)
+    // Fall back to server-side extraction only if client didn't provide text
+    let accord25Text = preExtractedAccord25
+    let policyText: string | null = preExtractedPolicy || null
+
+    if (!accord25Text) {
+      try {
+        accord25Text = await extractPdfText(savedPaths.accord25)
+      } catch {
+        accord25Text = '[PDF text extraction failed]'
+      }
     }
 
-    if (savedPaths.policy) {
+    if (!policyText && savedPaths.policy) {
       try {
         policyText = await extractPdfText(savedPaths.policy)
-        db.prepare('UPDATE documents SET extracted_text = ?, processed_at = datetime(\'now\') WHERE submission_id = ? AND doc_type = ?')
-          .run(policyText, submissionId, 'policy')
       } catch {
         policyText = null
       }
+    }
+
+    // Persist extracted text
+    db.prepare("UPDATE documents SET extracted_text = ?, processed_at = datetime('now') WHERE submission_id = ? AND doc_type = ?")
+      .run(accord25Text, submissionId, 'accord25')
+    if (policyText && savedPaths.policy) {
+      db.prepare("UPDATE documents SET extracted_text = ?, processed_at = datetime('now') WHERE submission_id = ? AND doc_type = ?")
+        .run(policyText, submissionId, 'policy')
     }
 
     // Find matching schedule requirements
@@ -107,11 +127,8 @@ export async function POST(request: NextRequest) {
       )
     } catch (aiError) {
       console.error('AI analysis failed:', aiError)
-      // Store a placeholder so the submission isn't stuck
-      db.prepare(`
-        INSERT OR IGNORE INTO ai_analysis (submission_id, issues)
-        VALUES (?, ?)
-      `).run(submissionId, JSON.stringify(['AI analysis failed — please re-run manually']))
+      db.prepare('INSERT OR IGNORE INTO ai_analysis (submission_id, issues) VALUES (?, ?)')
+        .run(submissionId, JSON.stringify(['AI analysis failed — please re-run manually']))
     }
 
     return NextResponse.json({ submissionId }, { status: 201 })

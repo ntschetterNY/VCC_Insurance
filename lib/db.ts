@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3'
 import path from 'path'
+import crypto from 'crypto'
 
 let db: Database.Database | null = null
 
@@ -15,6 +16,12 @@ export function getDb(): Database.Database {
 
   initSchema(db)
   return db
+}
+
+function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString('hex')
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex')
+  return `${salt}:${hash}`
 }
 
 function initSchema(db: Database.Database) {
@@ -34,7 +41,11 @@ function initSchema(db: Database.Database) {
       uploaded_at TEXT DEFAULT (datetime('now')),
       reviewed_at TEXT,
       reviewer_notes TEXT,
-      FOREIGN KEY (sub_id) REFERENCES subcontractors(id)
+      assigned_to INTEGER,
+      procore_project_id TEXT,
+      procore_contract_id TEXT,
+      FOREIGN KEY (sub_id) REFERENCES subcontractors(id),
+      FOREIGN KEY (assigned_to) REFERENCES users(id)
     );
 
     CREATE TABLE IF NOT EXISTS documents (
@@ -90,6 +101,29 @@ function initSchema(db: Database.Database) {
       severity TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'reviewer' CHECK(role IN ('admin', 'reviewer')),
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      token TEXT NOT NULL UNIQUE,
+      expires_at TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
   `)
 
   // Seed schedule if empty
@@ -102,6 +136,16 @@ function initSchema(db: Database.Database) {
     insert.run('General Contractor', 1000000, 2000000, 1000000, 1000000, 5000000, 'Standard GC requirements')
     insert.run('Electrical', 1000000, 2000000, 500000, 1000000, 2000000, 'Electrical subcontractor requirements')
     insert.run('Plumbing', 1000000, 2000000, 500000, 1000000, 2000000, 'Plumbing subcontractor requirements')
+  }
+
+  // Seed default admin user if no users exist
+  const userCount = db.prepare('SELECT COUNT(*) as cnt FROM users').get() as { cnt: number }
+  if (userCount.cnt === 0) {
+    db.prepare(`
+      INSERT INTO users (email, name, password_hash, role)
+      VALUES (?, ?, ?, ?)
+    `).run('admin@vcc.com', 'Admin', hashPassword('admin123'), 'admin')
+    console.log('[DB] Default admin created: admin@vcc.com / admin123')
   }
 }
 
