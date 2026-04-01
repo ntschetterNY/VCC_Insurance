@@ -1,0 +1,486 @@
+'use client'
+
+import { useState, useEffect, useCallback } from 'react'
+import { useParams, useRouter } from 'next/navigation'
+import StatusBadge from '@/components/StatusBadge'
+import Link from 'next/link'
+
+interface SubmissionDetail {
+  id: number
+  status: string
+  uploaded_at: string
+  reviewed_at: string | null
+  reviewer_notes: string | null
+  sub_name: string
+  trade: string
+  tier: string
+  documents: {
+    id: number
+    doc_type: string
+    filename: string
+    processed_at: string | null
+  }[]
+  ai_analysis: {
+    cg_numbers: string[]
+    limits_found: Record<string, number | null>
+    limits_met: boolean
+    issues: string[]
+    flags: string[]
+    created_at: string
+  } | null
+  reviewer_flags: {
+    id: number
+    flag_type: string
+    description: string
+    severity: string
+    created_at: string
+  }[]
+  schedule: {
+    trade: string
+    gl_per_occurrence: number
+    gl_aggregate: number
+    workers_comp: number
+    auto_liability: number
+    umbrella: number
+  } | null
+}
+
+const LIMIT_LABELS: Record<string, string> = {
+  gl_per_occurrence: 'GL Per Occurrence',
+  gl_aggregate: 'GL Aggregate',
+  workers_comp: 'Workers Compensation',
+  auto_liability: 'Auto Liability',
+  umbrella: 'Umbrella / Excess',
+}
+
+function formatCurrency(val: number | null | undefined) {
+  if (val == null) return '—'
+  return '$' + val.toLocaleString()
+}
+
+function formatDate(d: string | null) {
+  if (!d) return '—'
+  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+const severityColors: Record<string, string> = {
+  low: 'bg-blue-100 text-blue-800',
+  medium: 'bg-yellow-100 text-yellow-800',
+  high: 'bg-red-100 text-red-800',
+}
+
+export default function ReviewPage() {
+  const { id } = useParams<{ id: string }>()
+  const router = useRouter()
+  const [data, setData] = useState<SubmissionDetail | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [actionLoading, setActionLoading] = useState(false)
+  const [reviewerNotes, setReviewerNotes] = useState('')
+  const [reanalyzing, setReanalyzing] = useState(false)
+
+  // Flag form
+  const [flagType, setFlagType] = useState('')
+  const [flagDesc, setFlagDesc] = useState('')
+  const [flagSeverity, setFlagSeverity] = useState('medium')
+  const [flagSubmitting, setFlagSubmitting] = useState(false)
+
+  const loadData = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/submissions/${id}`)
+      if (!res.ok) throw new Error('Failed to load')
+      const d: SubmissionDetail = await res.json()
+      setData(d)
+      setReviewerNotes(d.reviewer_notes || '')
+    } catch {
+      // ignore
+    } finally {
+      setLoading(false)
+    }
+  }, [id])
+
+  useEffect(() => {
+    loadData()
+  }, [loadData])
+
+  async function updateStatus(status: string) {
+    setActionLoading(true)
+    try {
+      await fetch(`/api/submissions/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status, reviewer_notes: reviewerNotes }),
+      })
+      await loadData()
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  async function saveNotes() {
+    setActionLoading(true)
+    try {
+      await fetch(`/api/submissions/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reviewer_notes: reviewerNotes }),
+      })
+      await loadData()
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  async function reanalyze() {
+    setReanalyzing(true)
+    try {
+      await fetch(`/api/analysis/${id}`, { method: 'POST' })
+      await loadData()
+    } finally {
+      setReanalyzing(false)
+    }
+  }
+
+  async function addFlag(e: React.FormEvent) {
+    e.preventDefault()
+    if (!flagType.trim() || !flagDesc.trim()) return
+    setFlagSubmitting(true)
+    try {
+      await fetch('/api/flags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          submission_id: parseInt(id),
+          flag_type: flagType,
+          description: flagDesc,
+          severity: flagSeverity,
+        }),
+      })
+      setFlagType('')
+      setFlagDesc('')
+      setFlagSeverity('medium')
+      await loadData()
+    } finally {
+      setFlagSubmitting(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="p-8 flex items-center justify-center min-h-64">
+        <p className="text-gray-500">Loading submission…</p>
+      </div>
+    )
+  }
+
+  if (!data) {
+    return (
+      <div className="p-8">
+        <p className="text-red-600">Submission not found.</p>
+        <Link href="/" className="text-blue-600 hover:underline text-sm mt-2 inline-block">← Back to Dashboard</Link>
+      </div>
+    )
+  }
+
+  const analysis = data.ai_analysis
+  const schedule = data.schedule
+
+  return (
+    <div className="p-8 max-w-5xl">
+      {/* Header */}
+      <div className="flex items-start justify-between mb-8">
+        <div>
+          <Link href="/" className="text-sm text-gray-400 hover:text-gray-600 mb-2 inline-block">← Dashboard</Link>
+          <h1 className="text-2xl font-bold text-gray-900">{data.sub_name}</h1>
+          <div className="flex items-center gap-3 mt-2">
+            <StatusBadge status={data.status} />
+            <span className="text-sm text-gray-500">{data.trade || 'No trade'}</span>
+            <span className="text-sm text-gray-400">·</span>
+            <span className="text-sm text-gray-500 capitalize">{data.tier} tier</span>
+            <span className="text-sm text-gray-400">·</span>
+            <span className="text-sm text-gray-500">Uploaded {formatDate(data.uploaded_at)}</span>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => updateStatus('approved')}
+            disabled={actionLoading || data.status === 'approved'}
+            className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors disabled:opacity-50"
+          >
+            Approve
+          </button>
+          <button
+            onClick={() => updateStatus('rejected')}
+            disabled={actionLoading || data.status === 'rejected'}
+            className="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-700 transition-colors disabled:opacity-50"
+          >
+            Reject
+          </button>
+          <button
+            onClick={() => updateStatus('reviewing')}
+            disabled={actionLoading || data.status === 'reviewing'}
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+          >
+            Mark Reviewing
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-6">
+        <div className="col-span-2 space-y-6">
+
+          {/* AI Analysis */}
+          <div className="bg-white rounded-xl border border-gray-200">
+            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+              <h2 className="text-base font-semibold text-gray-900">AI Analysis</h2>
+              <button
+                onClick={reanalyze}
+                disabled={reanalyzing}
+                className="text-xs text-slate-600 border border-slate-300 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors disabled:opacity-50"
+              >
+                {reanalyzing ? 'Re-analyzing…' : 'Re-run Analysis'}
+              </button>
+            </div>
+
+            {!analysis ? (
+              <div className="px-6 py-8 text-center text-gray-500">
+                <p className="mb-3">No AI analysis available yet.</p>
+                <button
+                  onClick={reanalyze}
+                  disabled={reanalyzing}
+                  className="bg-[#0f172a] text-white px-4 py-2 rounded-lg text-sm hover:bg-slate-700 disabled:opacity-50"
+                >
+                  {reanalyzing ? 'Analyzing…' : 'Run Analysis'}
+                </button>
+              </div>
+            ) : (
+              <div className="p-6 space-y-6">
+                {/* Overall result */}
+                <div className={`rounded-lg px-4 py-3 text-sm font-medium ${analysis.limits_met ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
+                  {analysis.limits_met ? '✓ All required limits are met' : '✗ One or more required limits are not met or missing'}
+                </div>
+
+                {/* CG Numbers */}
+                {analysis.cg_numbers && analysis.cg_numbers.length > 0 && (
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-700 mb-2">CG Policy Numbers</h3>
+                    <div className="flex flex-wrap gap-2">
+                      {analysis.cg_numbers.map((cg, i) => (
+                        <span key={i} className="bg-slate-100 text-slate-800 px-2.5 py-1 rounded text-xs font-mono">
+                          {cg}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Limits Comparison */}
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-700 mb-2">Coverage Limits</h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-200">
+                          <th className="text-left py-2 pr-4 text-xs font-semibold text-gray-500 uppercase tracking-wide">Coverage</th>
+                          <th className="text-right py-2 pr-4 text-xs font-semibold text-gray-500 uppercase tracking-wide">Required</th>
+                          <th className="text-right py-2 pr-4 text-xs font-semibold text-gray-500 uppercase tracking-wide">Found</th>
+                          <th className="text-center py-2 text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {Object.entries(LIMIT_LABELS).map(([key, label]) => {
+                          const found = analysis.limits_found?.[key]
+                          const required = schedule?.[key as keyof typeof schedule] as number | undefined
+                          const met = found != null && required != null ? found >= required : found != null && required == null
+                          const missing = required != null && found == null
+                          return (
+                            <tr key={key}>
+                              <td className="py-2 pr-4 text-gray-700">{label}</td>
+                              <td className="py-2 pr-4 text-right text-gray-500">{formatCurrency(required ?? null)}</td>
+                              <td className="py-2 pr-4 text-right font-medium text-gray-900">{formatCurrency(found ?? null)}</td>
+                              <td className="py-2 text-center">
+                                {required == null && found == null ? (
+                                  <span className="text-gray-400 text-xs">N/A</span>
+                                ) : missing ? (
+                                  <span className="text-red-600 text-xs font-medium">Missing</span>
+                                ) : met ? (
+                                  <span className="text-green-600 text-xs font-medium">✓ Pass</span>
+                                ) : (
+                                  <span className="text-red-600 text-xs font-medium">✗ Low</span>
+                                )}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Issues */}
+                {analysis.issues && analysis.issues.length > 0 && (
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-700 mb-2">Issues Found</h3>
+                    <ul className="space-y-1.5">
+                      {analysis.issues.map((issue, i) => (
+                        <li key={i} className="flex items-start gap-2 text-sm text-red-700 bg-red-50 rounded-lg px-3 py-2">
+                          <span className="mt-0.5 shrink-0">✗</span>
+                          {issue}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Flags */}
+                {analysis.flags && analysis.flags.length > 0 && (
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-700 mb-2">Flags &amp; Concerns</h3>
+                    <ul className="space-y-1.5">
+                      {analysis.flags.map((flag, i) => (
+                        <li key={i} className="flex items-start gap-2 text-sm text-yellow-800 bg-yellow-50 rounded-lg px-3 py-2">
+                          <span className="mt-0.5 shrink-0">⚑</span>
+                          {flag}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <p className="text-xs text-gray-400">Analysis generated {formatDate(analysis.created_at)}</p>
+              </div>
+            )}
+          </div>
+
+          {/* Reviewer Flags */}
+          <div className="bg-white rounded-xl border border-gray-200">
+            <div className="px-6 py-4 border-b border-gray-200">
+              <h2 className="text-base font-semibold text-gray-900">Reviewer Flags</h2>
+            </div>
+            <div className="p-6 space-y-4">
+              {data.reviewer_flags.length > 0 && (
+                <div className="space-y-2 mb-4">
+                  {data.reviewer_flags.map((f) => (
+                    <div key={f.id} className="border border-gray-200 rounded-lg px-4 py-3">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-sm font-medium text-gray-900">{f.flag_type}</span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${severityColors[f.severity] ?? 'bg-gray-100 text-gray-700'}`}>
+                          {f.severity}
+                        </span>
+                        <span className="text-xs text-gray-400 ml-auto">{formatDate(f.created_at)}</span>
+                      </div>
+                      <p className="text-sm text-gray-600">{f.description}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <form onSubmit={addFlag} className="border border-dashed border-gray-300 rounded-lg p-4 space-y-3">
+                <p className="text-sm font-medium text-gray-700">Add Flag</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <input
+                    type="text"
+                    placeholder="Flag type (e.g. Missing Endorsement)"
+                    value={flagType}
+                    onChange={(e) => setFlagType(e.target.value)}
+                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
+                  />
+                  <select
+                    value={flagSeverity}
+                    onChange={(e) => setFlagSeverity(e.target.value)}
+                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
+                  >
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                  </select>
+                </div>
+                <textarea
+                  placeholder="Description…"
+                  value={flagDesc}
+                  onChange={(e) => setFlagDesc(e.target.value)}
+                  rows={2}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 resize-none"
+                />
+                <button
+                  type="submit"
+                  disabled={flagSubmitting}
+                  className="bg-[#0f172a] text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-700 disabled:opacity-50"
+                >
+                  {flagSubmitting ? 'Adding…' : 'Add Flag'}
+                </button>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        {/* Sidebar */}
+        <div className="space-y-5">
+          {/* Documents */}
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <h3 className="text-sm font-semibold text-gray-900 mb-3">Documents</h3>
+            {data.documents.length === 0 ? (
+              <p className="text-sm text-gray-400">No documents uploaded</p>
+            ) : (
+              <ul className="space-y-2">
+                {data.documents.map((doc) => (
+                  <li key={doc.id} className="text-sm">
+                    <p className="font-medium text-gray-800 truncate">{doc.filename}</p>
+                    <p className="text-xs text-gray-400 capitalize">{doc.doc_type === 'accord25' ? 'Accord 25' : 'Full Policy'}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* Schedule Requirements */}
+          {schedule && (
+            <div className="bg-white rounded-xl border border-gray-200 p-5">
+              <h3 className="text-sm font-semibold text-gray-900 mb-3">Schedule: {schedule.trade}</h3>
+              <dl className="space-y-1.5 text-sm">
+                <div className="flex justify-between">
+                  <dt className="text-gray-500">GL / Occurrence</dt>
+                  <dd className="font-medium">{formatCurrency(schedule.gl_per_occurrence)}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-gray-500">GL Aggregate</dt>
+                  <dd className="font-medium">{formatCurrency(schedule.gl_aggregate)}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-gray-500">Workers Comp</dt>
+                  <dd className="font-medium">{formatCurrency(schedule.workers_comp)}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-gray-500">Auto Liability</dt>
+                  <dd className="font-medium">{formatCurrency(schedule.auto_liability)}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-gray-500">Umbrella</dt>
+                  <dd className="font-medium">{formatCurrency(schedule.umbrella)}</dd>
+                </div>
+              </dl>
+            </div>
+          )}
+
+          {/* Reviewer Notes */}
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <h3 className="text-sm font-semibold text-gray-900 mb-3">Reviewer Notes</h3>
+            <textarea
+              value={reviewerNotes}
+              onChange={(e) => setReviewerNotes(e.target.value)}
+              rows={4}
+              placeholder="Add notes…"
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 resize-none"
+            />
+            <button
+              onClick={saveNotes}
+              disabled={actionLoading}
+              className="mt-2 w-full bg-slate-100 text-slate-800 px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-200 transition-colors disabled:opacity-50"
+            >
+              Save Notes
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
