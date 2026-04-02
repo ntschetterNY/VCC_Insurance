@@ -14,6 +14,10 @@ interface SubmissionDetail {
   sub_name: string
   trade: string
   tier: string
+  assigned_to: number | null
+  assigned_user_name: string | null
+  procore_project_id: string | null
+  procore_contract_id: string | null
   documents: {
     id: number
     doc_type: string
@@ -43,6 +47,7 @@ interface SubmissionDetail {
     auto_liability: number
     umbrella: number
   } | null
+  available_reviewers: { id: number; name: string; role: string }[]
 }
 
 const LIMIT_LABELS: Record<string, string> = {
@@ -73,10 +78,13 @@ export default function ReviewPage() {
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
   const [data, setData] = useState<SubmissionDetail | null>(null)
+  const [currentUser, setCurrentUser] = useState<{ id: number; role: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState(false)
   const [reviewerNotes, setReviewerNotes] = useState('')
   const [reanalyzing, setReanalyzing] = useState(false)
+  const [assignedTo, setAssignedTo] = useState<number | ''>('')
+  const [deleting, setDeleting] = useState(false)
 
   // Flag form
   const [flagType, setFlagType] = useState('')
@@ -86,11 +94,16 @@ export default function ReviewPage() {
 
   const loadData = useCallback(async () => {
     try {
-      const res = await fetch(`/api/submissions/${id}`)
-      if (!res.ok) throw new Error('Failed to load')
-      const d: SubmissionDetail = await res.json()
+      const [subRes, meRes] = await Promise.all([
+        fetch(`/api/submissions/${id}`),
+        fetch('/api/auth/me'),
+      ])
+      if (!subRes.ok) throw new Error('Failed to load')
+      const d: SubmissionDetail = await subRes.json()
       setData(d)
       setReviewerNotes(d.reviewer_notes || '')
+      setAssignedTo(d.assigned_to ?? '')
+      if (meRes.ok) setCurrentUser(await meRes.json())
     } catch {
       // ignore
     } finally {
@@ -130,6 +143,15 @@ export default function ReviewPage() {
     }
   }
 
+  async function saveAssignment() {
+    await fetch(`/api/submissions/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assigned_to: assignedTo === '' ? null : assignedTo }),
+    })
+    await loadData()
+  }
+
   async function reanalyze() {
     setReanalyzing(true)
     try {
@@ -164,6 +186,22 @@ export default function ReviewPage() {
     }
   }
 
+  async function deleteSubmission() {
+    if (!confirm('Permanently delete this submission and all associated documents? This cannot be undone.')) return
+    setDeleting(true)
+    try {
+      const res = await fetch(`/api/submissions/${id}`, { method: 'DELETE' })
+      if (res.ok) {
+        router.push('/')
+      } else {
+        const body = await res.json().catch(() => ({}))
+        alert(body.error || 'Delete failed')
+      }
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="p-8 flex items-center justify-center min-h-64">
@@ -183,6 +221,7 @@ export default function ReviewPage() {
 
   const analysis = data.ai_analysis
   const schedule = data.schedule
+  const isAdmin = currentUser?.role === 'admin'
 
   return (
     <div className="p-8 max-w-5xl">
@@ -191,16 +230,25 @@ export default function ReviewPage() {
         <div>
           <Link href="/" className="text-sm text-gray-400 hover:text-gray-600 mb-2 inline-block">← Dashboard</Link>
           <h1 className="text-2xl font-bold text-gray-900">{data.sub_name}</h1>
-          <div className="flex items-center gap-3 mt-2">
+          <div className="flex items-center gap-3 mt-2 flex-wrap">
             <StatusBadge status={data.status} />
             <span className="text-sm text-gray-500">{data.trade || 'No trade'}</span>
             <span className="text-sm text-gray-400">·</span>
             <span className="text-sm text-gray-500 capitalize">{data.tier} tier</span>
             <span className="text-sm text-gray-400">·</span>
             <span className="text-sm text-gray-500">Uploaded {formatDate(data.uploaded_at)}</span>
+            {data.procore_project_id && (
+              <>
+                <span className="text-sm text-gray-400">·</span>
+                <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded font-medium">
+                  Procore #{data.procore_project_id}
+                  {data.procore_contract_id ? ` / ${data.procore_contract_id}` : ''}
+                </span>
+              </>
+            )}
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap justify-end">
           <button
             onClick={() => updateStatus('approved')}
             disabled={actionLoading || data.status === 'approved'}
@@ -222,6 +270,15 @@ export default function ReviewPage() {
           >
             Mark Reviewing
           </button>
+          {isAdmin && (
+            <button
+              onClick={deleteSubmission}
+              disabled={deleting}
+              className="bg-gray-100 text-red-600 border border-red-200 px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-50 transition-colors disabled:opacity-50"
+            >
+              {deleting ? 'Deleting…' : 'Delete'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -421,15 +478,51 @@ export default function ReviewPage() {
             {data.documents.length === 0 ? (
               <p className="text-sm text-gray-400">No documents uploaded</p>
             ) : (
-              <ul className="space-y-2">
+              <ul className="space-y-3">
                 {data.documents.map((doc) => (
-                  <li key={doc.id} className="text-sm">
-                    <p className="font-medium text-gray-800 truncate">{doc.filename}</p>
-                    <p className="text-xs text-gray-400 capitalize">{doc.doc_type === 'accord25' ? 'Accord 25' : 'Full Policy'}</p>
+                  <li key={doc.id}>
+                    <p className="font-medium text-gray-800 text-sm truncate" title={doc.filename}>{doc.filename}</p>
+                    <p className="text-xs text-gray-400 capitalize mb-1">{doc.doc_type === 'accord25' ? 'Accord 25' : 'Full Policy'}</p>
+                    <a
+                      href={`/api/documents/${doc.id}/download`}
+                      download
+                      className="inline-flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-800 font-medium border border-blue-200 hover:border-blue-400 px-2.5 py-1 rounded-lg transition-colors"
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                      </svg>
+                      Download
+                    </a>
                   </li>
                 ))}
               </ul>
             )}
+          </div>
+
+          {/* Assign Reviewer */}
+          <div className="bg-white rounded-xl border border-gray-200 p-5">
+            <h3 className="text-sm font-semibold text-gray-900 mb-3">Assigned Reviewer</h3>
+            {data.assigned_user_name && (
+              <p className="text-sm text-gray-600 mb-2">
+                Currently: <span className="font-medium text-gray-900">{data.assigned_user_name}</span>
+              </p>
+            )}
+            <select
+              value={assignedTo}
+              onChange={(e) => setAssignedTo(e.target.value === '' ? '' : parseInt(e.target.value))}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 mb-2"
+            >
+              <option value="">— Unassigned —</option>
+              {data.available_reviewers.map((r) => (
+                <option key={r.id} value={r.id}>{r.name} ({r.role})</option>
+              ))}
+            </select>
+            <button
+              onClick={saveAssignment}
+              className="w-full bg-slate-100 text-slate-800 px-3 py-2 rounded-lg text-sm font-medium hover:bg-slate-200 transition-colors"
+            >
+              Save Assignment
+            </button>
           </div>
 
           {/* Schedule Requirements */}

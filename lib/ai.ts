@@ -4,6 +4,10 @@ const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 })
 
+// Max characters sent to Claude per document — keeps token usage low
+const MAX_ACCORD_CHARS = 4000
+const MAX_POLICY_CHARS = 2000
+
 export interface AnalysisResult {
   cg_numbers: string[]
   limits_found: {
@@ -31,79 +35,39 @@ export async function analyzeAccord25(
     notes?: string
   } | null
 ): Promise<AnalysisResult> {
-  const requirementsSection = scheduleRequirements
-    ? `
-SCHEDULE OF REQUIREMENTS FOR THIS TRADE (${scheduleRequirements.trade || 'Unknown Trade'}):
-- GL Per Occurrence: $${(scheduleRequirements.gl_per_occurrence || 0).toLocaleString()}
-- GL Aggregate: $${(scheduleRequirements.gl_aggregate || 0).toLocaleString()}
-- Workers Compensation: $${(scheduleRequirements.workers_comp || 0).toLocaleString()}
-- Auto Liability: $${(scheduleRequirements.auto_liability || 0).toLocaleString()}
-- Umbrella/Excess: $${(scheduleRequirements.umbrella || 0).toLocaleString()}
-${scheduleRequirements.notes ? `- Notes: ${scheduleRequirements.notes}` : ''}
-`
-    : 'No specific schedule requirements provided. Apply general industry standards.'
+  // Truncate to reduce tokens — Accord 25 certs are short; extra text is noise
+  const accord25 = text.slice(0, MAX_ACCORD_CHARS)
+  const policy = policyText ? policyText.slice(0, MAX_POLICY_CHARS) : null
 
-  const combinedText = policyText
-    ? `ACCORD 25 CERTIFICATE:\n${text}\n\nFULL POLICY DOCUMENT:\n${policyText}`
-    : `ACCORD 25 CERTIFICATE:\n${text}`
+  const req = scheduleRequirements
+    ? `REQUIREMENTS (${scheduleRequirements.trade ?? 'Unknown'}): GL/occ $${scheduleRequirements.gl_per_occurrence ?? 0} GL/agg $${scheduleRequirements.gl_aggregate ?? 0} WC $${scheduleRequirements.workers_comp ?? 0} Auto $${scheduleRequirements.auto_liability ?? 0} Umbrella $${scheduleRequirements.umbrella ?? 0}${scheduleRequirements.notes ? ` Notes: ${scheduleRequirements.notes}` : ''}`
+    : 'REQUIREMENTS: Apply general industry standards.'
 
-  const prompt = `You are an insurance compliance expert reviewing subcontractor insurance documents for a construction company.
+  const docs = policy
+    ? `ACCORD 25:\n${accord25}\n\nPOLICY (excerpt):\n${policy}`
+    : `ACCORD 25:\n${accord25}`
 
-Analyze the following insurance document(s) and extract all relevant information.
+  const prompt = `Insurance compliance review. Extract data from these docs and return JSON only.
 
-${requirementsSection}
+${req}
 
-DOCUMENT(S) TO ANALYZE:
-${combinedText}
+${docs}
 
-Please extract and analyze:
-1. All CG (Commercial General Liability) policy numbers - these typically appear as "CG" followed by alphanumeric characters
-2. All insurance limits found in the documents:
-   - Commercial General Liability per occurrence limit
-   - Commercial General Liability aggregate limit
-   - Workers Compensation limit
-   - Auto Liability limit
-   - Umbrella/Excess Liability limit
-3. Whether the found limits meet the schedule requirements (if provided)
-4. Any issues found (expired dates, missing required coverages, limits below requirements, missing additional insured endorsements, etc.)
-5. Any flags or concerns (common exclusions, suspicious entries, non-standard language, etc.)
-
-Return ONLY a valid JSON object with this exact structure:
-{
-  "cg_numbers": ["list of CG policy numbers found"],
-  "limits_found": {
-    "gl_per_occurrence": <number or null>,
-    "gl_aggregate": <number or null>,
-    "workers_comp": <number or null>,
-    "auto_liability": <number or null>,
-    "umbrella": <number or null>
-  },
-  "limits_met": <true or false>,
-  "issues": ["list of specific issues found"],
-  "flags": ["list of flags or concerns"]
-}
-
-Return only the JSON, no other text.`
+Return ONLY valid JSON:
+{"cg_numbers":[],"limits_found":{"gl_per_occurrence":null,"gl_aggregate":null,"workers_comp":null,"auto_liability":null,"umbrella":null},"limits_met":false,"issues":[],"flags":[]}`
 
   const message = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 1024,
-    messages: [
-      {
-        role: 'user',
-        content: prompt,
-      },
-    ],
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 512,
+    messages: [{ role: 'user', content: prompt }],
   })
 
   const responseText = message.content[0].type === 'text' ? message.content[0].text : ''
 
-  // Parse JSON from response
   const jsonMatch = responseText.match(/\{[\s\S]*\}/)
   if (!jsonMatch) {
     throw new Error('No valid JSON found in AI response')
   }
 
-  const result = JSON.parse(jsonMatch[0]) as AnalysisResult
-  return result
+  return JSON.parse(jsonMatch[0]) as AnalysisResult
 }

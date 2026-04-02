@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
 import './globals.css'
-import NavBar from '@/components/NavBar'
+import AuthShell from '@/components/AuthShell'
 
 export const metadata: Metadata = {
   title: 'VCC Insurance',
@@ -15,12 +15,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="bg-gray-50 text-gray-900">
-        <div className="flex min-h-screen">
-          <NavBar />
-          <main className="flex-1 ml-56 min-h-screen">
-            {children}
-          </main>
-        </div>
+        <AuthShell>{children}</AuthShell>
       </body>
     </html>
   )
