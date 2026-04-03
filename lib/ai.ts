@@ -5,8 +5,53 @@ const client = new Anthropic({
 })
 
 // Max characters sent to Claude per document — keeps token usage low
-const MAX_ACCORD_CHARS = 4000
-const MAX_POLICY_CHARS = 2000
+const MAX_ACCORD_CHARS = 8000
+const MAX_POLICY_CHARS = 4000
+
+export interface ChecklistResult {
+  // Contract
+  contract_signed: string | null
+  contracted_with: string | null
+  indemnification: string | null
+  ai_premise: string | null
+  ai_comp_ops: string | null
+
+  // General Liability
+  gl_carrier: string | null
+  gl_carrier_rating: string | null
+  gl_limits: string | null
+  gl_term: string | null
+  gl_full_policy: string | null
+  cg_20_10: string | null
+  cg_20_37: string | null
+  pnc: string | null
+  wos: string | null
+  occ_claims_made: string | null
+  per_project_limits: string | null
+  defense_in_out: string | null
+  action_over_excl: string | null
+  subsidence_excl: string | null
+  deductible: string | null
+  contractual_liability: string | null
+  gl_compliant: string | null
+  gl_comments: string | null
+
+  // Excess / Umbrella
+  excess_carrier: string | null
+  excess_limits: string | null
+  excess_term: string | null
+  excess_full_policy: string | null
+  excess_type: string | null
+  excess_compliant: string | null
+  excess_comments: string | null
+
+  // Workers Compensation
+  wc_carrier: string | null
+  wc_limits: string | null
+  wc_term: string | null
+  wc_full_policy: string | null
+  wc_comments: string | null
+}
 
 export interface AnalysisResult {
   cg_numbers: string[]
@@ -20,7 +65,67 @@ export interface AnalysisResult {
   limits_met: boolean
   issues: string[]
   flags: string[]
+  checklist: ChecklistResult
 }
+
+const CHECKLIST_PROMPT = `You are an expert insurance compliance reviewer for a construction company. Analyze the submitted insurance documents against the following comprehensive review checklist. Extract every piece of information you can find.
+
+## INSURANCE REVIEW CHECKLIST
+
+Review the documents for ALL of the following categories and fields:
+
+### CONTRACT REVIEW
+- **contract_signed**: Is the contract signed? (Y/N/Unknown)
+- **contracted_with**: Who is the contract with? (entity name)
+- **indemnification**: Does the contract contain indemnification language? (Y/N/Unknown)
+- **ai_premise**: Additional Insured - Premises coverage present? (Y/N/Unknown)
+- **ai_comp_ops**: Additional Insured - Completed Operations coverage present? (Y/N/Unknown)
+
+### GENERAL LIABILITY
+- **gl_carrier**: Name of the General Liability insurance carrier
+- **gl_carrier_rating**: AM Best rating of the carrier (e.g., "A- XIV", "A+ XV")
+- **gl_limits**: GL limits in shorthand format (e.g., "1/2/2/1" = $1M per occ / $2M general agg / $2M products agg / $1M personal injury)
+- **gl_term**: Policy term dates (e.g., "10/15/2024 - 10/15/2025")
+- **gl_full_policy**: Was a full policy submitted? (Y/N/Unknown)
+- **cg_20_10**: CG 20 10 Additional Insured endorsement present? Include edition date if found (e.g., "Yes via CG 20 10 12 19")
+- **cg_20_37**: CG 20 37 Additional Insured - Completed Operations endorsement present? Include edition date if found
+- **pnc**: Primary and Non-Contributory endorsement present? (Y/N/Unknown)
+- **wos**: Waiver of Subrogation endorsement present? (Y/N/Unknown)
+- **occ_claims_made**: Is the policy Occurrence or Claims Made based?
+- **per_project_limits**: Are there per-project aggregate limits? (Y/N/Unknown)
+- **defense_in_out**: Is defense inside or outside the limits? (In/Out/Unknown)
+- **action_over_excl**: Is there an Action Over Exclusion? (Y/N/Unknown)
+- **subsidence_excl**: Is there a Subsidence Exclusion? (Y/N/Unknown)
+- **deductible**: Deductible amount if any (e.g., "$5,000" or "None")
+- **contractual_liability**: Is Contractual Liability coverage included? (Y/N/Unknown)
+- **gl_compliant**: Overall, is the GL coverage compliant with requirements? (Y/N)
+- **gl_comments**: Any additional GL observations, concerns, or notes
+
+### EXCESS / UMBRELLA
+- **excess_carrier**: Name of the Excess/Umbrella insurance carrier
+- **excess_limits**: Excess/Umbrella limit amount (e.g., "$5M")
+- **excess_term**: Policy term dates
+- **excess_full_policy**: Was a full excess policy submitted? (Y/N/Unknown)
+- **excess_type**: Is it an Excess or Umbrella policy?
+- **excess_compliant**: Is the Excess/Umbrella coverage compliant? (Y/N)
+- **excess_comments**: Any additional Excess/Umbrella observations or notes
+
+### WORKERS COMPENSATION
+- **wc_carrier**: Name of the WC insurance carrier
+- **wc_limits**: WC limits (e.g., "$1M/$1M/$1M" = Each Accident / Disease-Policy Limit / Disease-Each Employee)
+- **wc_term**: Policy term dates
+- **wc_full_policy**: Was a full WC policy submitted? (Y/N/Unknown)
+- **wc_comments**: Any additional WC observations or notes
+
+## COMPLIANCE FLAGS
+Also identify:
+- Any policies that are expired or expiring within 30 days
+- Missing required endorsements (CG 20 10, CG 20 37, PNC, WOS)
+- Limits that do not meet requirements
+- Any carrier with a rating below A- (AM Best)
+- Missing documents (e.g., full policy not provided, excess policy not submitted)
+- Any exclusions that could be problematic for construction work
+- Whether renewal policies are needed`
 
 export async function analyzeAccord25(
   text: string,
@@ -35,7 +140,6 @@ export async function analyzeAccord25(
     notes?: string
   } | null
 ): Promise<AnalysisResult> {
-  // Truncate to reduce tokens — Accord 25 certs are short; extra text is noise
   const accord25 = text.slice(0, MAX_ACCORD_CHARS)
   const policy = policyText ? policyText.slice(0, MAX_POLICY_CHARS) : null
 
@@ -47,18 +151,67 @@ export async function analyzeAccord25(
     ? `ACCORD 25:\n${accord25}\n\nPOLICY (excerpt):\n${policy}`
     : `ACCORD 25:\n${accord25}`
 
-  const prompt = `Insurance compliance review. Extract data from these docs and return JSON only.
+  const prompt = `${CHECKLIST_PROMPT}
 
 ${req}
 
 ${docs}
 
-Return ONLY valid JSON:
-{"cg_numbers":[],"limits_found":{"gl_per_occurrence":null,"gl_aggregate":null,"workers_comp":null,"auto_liability":null,"umbrella":null},"limits_met":false,"issues":[],"flags":[]}`
+Return ONLY valid JSON matching this exact structure (use null for fields you cannot determine):
+{
+  "cg_numbers": [],
+  "limits_found": {
+    "gl_per_occurrence": null,
+    "gl_aggregate": null,
+    "workers_comp": null,
+    "auto_liability": null,
+    "umbrella": null
+  },
+  "limits_met": false,
+  "issues": [],
+  "flags": [],
+  "checklist": {
+    "contract_signed": null,
+    "contracted_with": null,
+    "indemnification": null,
+    "ai_premise": null,
+    "ai_comp_ops": null,
+    "gl_carrier": null,
+    "gl_carrier_rating": null,
+    "gl_limits": null,
+    "gl_term": null,
+    "gl_full_policy": null,
+    "cg_20_10": null,
+    "cg_20_37": null,
+    "pnc": null,
+    "wos": null,
+    "occ_claims_made": null,
+    "per_project_limits": null,
+    "defense_in_out": null,
+    "action_over_excl": null,
+    "subsidence_excl": null,
+    "deductible": null,
+    "contractual_liability": null,
+    "gl_compliant": null,
+    "gl_comments": null,
+    "excess_carrier": null,
+    "excess_limits": null,
+    "excess_term": null,
+    "excess_full_policy": null,
+    "excess_type": null,
+    "excess_compliant": null,
+    "excess_comments": null,
+    "wc_carrier": null,
+    "wc_limits": null,
+    "wc_term": null,
+    "wc_full_policy": null,
+    "wc_comments": null
+  }
+}`
 
   const message = await client.messages.create({
     model: 'claude-haiku-4-5-20251001',
-    max_tokens: 512,
+    max_tokens: 2048,
     messages: [{ role: 'user', content: prompt }],
   })
 
@@ -69,5 +222,12 @@ Return ONLY valid JSON:
     throw new Error('No valid JSON found in AI response')
   }
 
-  return JSON.parse(jsonMatch[0]) as AnalysisResult
+  const parsed = JSON.parse(jsonMatch[0])
+
+  // Ensure checklist field exists with defaults
+  if (!parsed.checklist) {
+    parsed.checklist = {}
+  }
+
+  return parsed as AnalysisResult
 }

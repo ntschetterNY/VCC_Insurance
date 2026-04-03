@@ -67,6 +67,7 @@ function initSchema(db: Database.Database) {
       limits_met INTEGER DEFAULT 0,
       issues TEXT DEFAULT '[]',
       flags TEXT DEFAULT '[]',
+      checklist TEXT DEFAULT '{}',
       raw_response TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (submission_id) REFERENCES submissions(id)
@@ -125,6 +126,12 @@ function initSchema(db: Database.Database) {
       value TEXT
     );
   `)
+
+  // Migrate: add checklist column if missing (for existing databases)
+  const cols = db.prepare("PRAGMA table_info(ai_analysis)").all() as { name: string }[]
+  if (cols.length > 0 && !cols.find(c => c.name === 'checklist')) {
+    db.exec("ALTER TABLE ai_analysis ADD COLUMN checklist TEXT DEFAULT '{}'")
+  }
 
   // Seed schedule if empty
   const count = db.prepare('SELECT COUNT(*) as cnt FROM schedule').get() as { cnt: number }

@@ -30,6 +30,7 @@ interface SubmissionDetail {
     limits_met: boolean
     issues: string[]
     flags: string[]
+    checklist: Record<string, string | null>
     created_at: string
   } | null
   reviewer_flags: {
@@ -400,6 +401,136 @@ export default function ReviewPage() {
                         </li>
                       ))}
                     </ul>
+                  </div>
+                )}
+
+                {/* Insurance Review Checklist */}
+                {analysis.checklist && Object.keys(analysis.checklist).length > 0 && (
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-700 mb-3">Insurance Review Checklist</h3>
+                    <div className="space-y-4">
+                      {/* Contract Review */}
+                      <div className="border border-gray-200 rounded-lg overflow-hidden">
+                        <div className="bg-slate-50 px-4 py-2 border-b border-gray-200">
+                          <h4 className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Contract</h4>
+                        </div>
+                        <div className="divide-y divide-gray-100">
+                          {([
+                            ['contract_signed', 'Contract Signed'],
+                            ['contracted_with', 'Contracted With'],
+                            ['indemnification', 'Indemnification'],
+                            ['ai_premise', 'AI Premise (Additional Insured)'],
+                            ['ai_comp_ops', 'AI Completed Ops'],
+                          ] as const).map(([key, label]) => {
+                            const val = analysis.checklist?.[key]
+                            return (
+                              <div key={key} className="flex justify-between px-4 py-2 text-sm">
+                                <span className="text-gray-600">{label}</span>
+                                <span className={`font-medium ${val === 'Y' || val === 'Yes' ? 'text-green-700' : val === 'N' || val === 'No' ? 'text-red-700' : 'text-gray-800'}`}>
+                                  {val || '—'}
+                                </span>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+
+                      {/* General Liability */}
+                      <div className="border border-gray-200 rounded-lg overflow-hidden">
+                        <div className="bg-slate-50 px-4 py-2 border-b border-gray-200">
+                          <h4 className="text-xs font-semibold text-slate-600 uppercase tracking-wide">General Liability</h4>
+                        </div>
+                        <div className="divide-y divide-gray-100">
+                          {([
+                            ['gl_carrier', 'Carrier'],
+                            ['gl_carrier_rating', 'Carrier Rating'],
+                            ['gl_limits', 'Limits'],
+                            ['gl_term', 'Term'],
+                            ['gl_full_policy', 'Full Policy'],
+                            ['cg_20_10', 'CG 20 10'],
+                            ['cg_20_37', 'CG 20 37'],
+                            ['pnc', 'Primary & Non-Contributory'],
+                            ['wos', 'Waiver of Subrogation'],
+                            ['occ_claims_made', 'Occurrence / Claims Made'],
+                            ['per_project_limits', 'Per Project Limits'],
+                            ['defense_in_out', 'Defense In/Out'],
+                            ['action_over_excl', 'Action Over Exclusion'],
+                            ['subsidence_excl', 'Subsidence Exclusion'],
+                            ['deductible', 'Deductible'],
+                            ['contractual_liability', 'Contractual Liability'],
+                            ['gl_compliant', 'Compliant'],
+                            ['gl_comments', 'Comments'],
+                          ] as const).map(([key, label]) => {
+                            const val = analysis.checklist?.[key]
+                            if (!val) return null
+                            const isCompliance = key === 'gl_compliant'
+                            return (
+                              <div key={key} className="flex justify-between px-4 py-2 text-sm gap-4">
+                                <span className="text-gray-600 shrink-0">{label}</span>
+                                <span className={`font-medium text-right ${isCompliance ? (val === 'Y' || val === 'Yes' ? 'text-green-700' : 'text-red-700') : 'text-gray-800'}`}>
+                                  {val}
+                                </span>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Excess / Umbrella */}
+                      <div className="border border-gray-200 rounded-lg overflow-hidden">
+                        <div className="bg-slate-50 px-4 py-2 border-b border-gray-200">
+                          <h4 className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Excess / Umbrella</h4>
+                        </div>
+                        <div className="divide-y divide-gray-100">
+                          {([
+                            ['excess_carrier', 'Carrier'],
+                            ['excess_limits', 'Limits'],
+                            ['excess_term', 'Term'],
+                            ['excess_full_policy', 'Full Policy'],
+                            ['excess_type', 'Excess / Umbrella'],
+                            ['excess_compliant', 'Compliant'],
+                            ['excess_comments', 'Comments'],
+                          ] as const).map(([key, label]) => {
+                            const val = analysis.checklist?.[key]
+                            if (!val) return null
+                            const isCompliance = key === 'excess_compliant'
+                            return (
+                              <div key={key} className="flex justify-between px-4 py-2 text-sm gap-4">
+                                <span className="text-gray-600 shrink-0">{label}</span>
+                                <span className={`font-medium text-right ${isCompliance ? (val === 'Y' || val === 'Yes' ? 'text-green-700' : 'text-red-700') : 'text-gray-800'}`}>
+                                  {val}
+                                </span>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Workers Compensation */}
+                      <div className="border border-gray-200 rounded-lg overflow-hidden">
+                        <div className="bg-slate-50 px-4 py-2 border-b border-gray-200">
+                          <h4 className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Workers Compensation</h4>
+                        </div>
+                        <div className="divide-y divide-gray-100">
+                          {([
+                            ['wc_carrier', 'Carrier'],
+                            ['wc_limits', 'Limits'],
+                            ['wc_term', 'Term'],
+                            ['wc_full_policy', 'Full Policy'],
+                            ['wc_comments', 'Comments'],
+                          ] as const).map(([key, label]) => {
+                            const val = analysis.checklist?.[key]
+                            if (!val) return null
+                            return (
+                              <div key={key} className="flex justify-between px-4 py-2 text-sm gap-4">
+                                <span className="text-gray-600 shrink-0">{label}</span>
+                                <span className="font-medium text-right text-gray-800">{val}</span>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 )}
 

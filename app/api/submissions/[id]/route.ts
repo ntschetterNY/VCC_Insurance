@@ -34,6 +34,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
         limits_found: JSON.parse(analysis.limits_found || '{}'),
         issues: JSON.parse(analysis.issues || '[]'),
         flags: JSON.parse(analysis.flags || '[]'),
+        checklist: JSON.parse(analysis.checklist || '{}'),
       }
     }
 
