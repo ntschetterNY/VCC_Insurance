@@ -106,14 +106,15 @@ export async function POST(request: NextRequest) {
     try {
       const analysis = await analyzeAccord25(accord25Text, policyText, schedule || null)
       db.prepare(`
-        INSERT INTO ai_analysis (submission_id, cg_numbers, limits_found, limits_met, issues, flags, raw_response)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO ai_analysis (submission_id, cg_numbers, limits_found, limits_met, issues, flags, checklist, raw_response)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(submission_id) DO UPDATE SET
           cg_numbers = excluded.cg_numbers,
           limits_found = excluded.limits_found,
           limits_met = excluded.limits_met,
           issues = excluded.issues,
           flags = excluded.flags,
+          checklist = excluded.checklist,
           raw_response = excluded.raw_response,
           created_at = datetime('now')
       `).run(
@@ -123,6 +124,7 @@ export async function POST(request: NextRequest) {
         analysis.limits_met ? 1 : 0,
         JSON.stringify(analysis.issues),
         JSON.stringify(analysis.flags),
+        JSON.stringify(analysis.checklist || {}),
         JSON.stringify(analysis)
       )
     } catch (aiError) {
