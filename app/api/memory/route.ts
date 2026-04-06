@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
-import getDb from '@/lib/db'
+import { getDb } from '@/lib/db'
 
 export async function GET() {
   try {
-    const db = getDb()
-    const entries = db.prepare('SELECT * FROM memory ORDER BY created_at DESC').all()
-    return NextResponse.json(entries)
+    const supabase = await getDb()
+    const { data, error } = await supabase
+      .from('memory')
+      .select('*')
+      .order('created_at', { ascending: false })
+
+    if (error) throw error
+    return NextResponse.json(data)
   } catch (err) {
     console.error(err)
     return NextResponse.json({ error: 'Failed to fetch memory' }, { status: 500 })
@@ -14,7 +19,7 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
-    const db = getDb()
+    const supabase = await getDb()
     const body = await req.json() as {
       title: string
       description?: string
@@ -24,17 +29,19 @@ export async function POST(req: NextRequest) {
 
     if (!body.title) return NextResponse.json({ error: 'Title is required' }, { status: 400 })
 
-    const result = db.prepare(`
-      INSERT INTO memory (title, description, category, severity)
-      VALUES (?, ?, ?, ?)
-    `).run(
-      body.title,
-      body.description || null,
-      body.category || 'Watch Item',
-      body.severity || 'medium'
-    )
+    const { data, error } = await supabase
+      .from('memory')
+      .insert({
+        title: body.title,
+        description: body.description ?? null,
+        category: body.category ?? 'Watch Item',
+        severity: body.severity ?? 'medium',
+      })
+      .select('id')
+      .single()
 
-    return NextResponse.json({ id: result.lastInsertRowid }, { status: 201 })
+    if (error) throw error
+    return NextResponse.json({ id: data.id }, { status: 201 })
   } catch (err) {
     console.error(err)
     return NextResponse.json({ error: 'Failed to create memory entry' }, { status: 500 })

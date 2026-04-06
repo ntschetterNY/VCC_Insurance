@@ -1,27 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { writeFileSync, mkdirSync, existsSync } from 'fs'
-import path from 'path'
-import getDb from '@/lib/db'
-import { extractPdfText } from '@/lib/pdf'
-import { analyzeAccord25 } from '@/lib/ai'
+import { getDb } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
+import { analyzeAccord25 } from '@/lib/ai'
+import { sanitizeString } from '@/lib/security'
 
 export async function POST(request: NextRequest) {
-  const user = requireAuth(request)
+  const user = await requireAuth()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   try {
     const formData = await request.formData()
 
-    const name = (formData.get('name') as string)?.trim()
-    const trade = (formData.get('trade') as string)?.trim()
+    const name = sanitizeString((formData.get('name') as string) ?? '')
+    const trade = sanitizeString((formData.get('trade') as string) ?? '')
     const tier = formData.get('tier') as string
     const accord25File = formData.get('accord25') as File | null
     const policyFile = formData.get('policy') as File | null
     const procoreProjectId = (formData.get('procore_project_id') as string)?.trim() || null
     const procoreContractId = (formData.get('procore_contract_id') as string)?.trim() || null
 
-    // Pre-extracted text sent from the client (offloads PDF parsing to uploader's browser)
+    // Pre-extracted text from the client (offloads PDF parsing)
     const preExtractedAccord25 = (formData.get('accord25_text') as string) || ''
     const preExtractedPolicy = (formData.get('policy_text') as string) || ''
 
@@ -29,108 +27,105 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Name and Accord 25 file are required' }, { status: 400 })
     }
 
-    const uploadsDir = path.join(process.cwd(), 'uploads')
-    if (!existsSync(uploadsDir)) mkdirSync(uploadsDir, { recursive: true })
-
-    const db = getDb()
+    const supabase = await getDb()
 
     // Upsert subcontractor
-    let sub = db.prepare('SELECT * FROM subcontractors WHERE name = ?').get(name) as { id: number } | undefined
-    if (!sub) {
-      const result = db.prepare('INSERT INTO subcontractors (name, trade, tier) VALUES (?, ?, ?)').run(name, trade, tier)
-      sub = { id: result.lastInsertRowid as number }
+    const { data: existingSub } = await supabase
+      .from('subcontractors')
+      .select('id')
+      .eq('name', name)
+      .single()
+
+    let subId: number
+    if (existingSub) {
+      subId = existingSub.id
+    } else {
+      const { data: newSub, error: subError } = await supabase
+        .from('subcontractors')
+        .insert({ name, trade, tier })
+        .select('id')
+        .single()
+      if (subError || !newSub) throw subError ?? new Error('Failed to create subcontractor')
+      subId = newSub.id
     }
 
     // Create submission
-    const submissionResult = db.prepare(
-      'INSERT INTO submissions (sub_id, status, procore_project_id, procore_contract_id) VALUES (?, ?, ?, ?)'
-    ).run(sub.id, 'reviewing', procoreProjectId, procoreContractId)
-    const submissionId = submissionResult.lastInsertRowid as number
+    const { data: submission, error: subErr } = await supabase
+      .from('submissions')
+      .insert({
+        sub_id: subId,
+        status: 'reviewing',
+        procore_project_id: procoreProjectId,
+        procore_contract_id: procoreContractId,
+      })
+      .select('id')
+      .single()
+    if (subErr || !submission) throw subErr ?? new Error('Failed to create submission')
+    const submissionId = submission.id
 
-    const savedPaths: { accord25: string; policy?: string } = { accord25: '' }
-
-    // Save Accord 25
+    // Upload Accord 25 to Supabase Storage
     const accord25Buffer = Buffer.from(await accord25File.arrayBuffer())
-    const accord25Filename = `${submissionId}_accord25_${accord25File.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-    const accord25Path = path.join(uploadsDir, accord25Filename)
-    writeFileSync(accord25Path, accord25Buffer)
-    savedPaths.accord25 = accord25Path
+    const accord25StoragePath = `${submissionId}/accord25_${accord25File.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+    await supabase.storage.from('documents').upload(accord25StoragePath, accord25Buffer, {
+      contentType: 'application/pdf',
+    })
 
-    db.prepare('INSERT INTO documents (submission_id, doc_type, filename, filepath) VALUES (?, ?, ?, ?)')
-      .run(submissionId, 'accord25', accord25File.name, accord25Path)
+    await supabase.from('documents').insert({
+      submission_id: submissionId,
+      doc_type: 'accord25',
+      filename: accord25File.name,
+      storage_path: accord25StoragePath,
+      extracted_text: preExtractedAccord25 || null,
+      processed_at: preExtractedAccord25 ? new Date().toISOString() : null,
+    })
 
-    // Save policy if provided
+    // Upload policy if provided
     if (policyFile && policyFile.size > 0) {
       const policyBuffer = Buffer.from(await policyFile.arrayBuffer())
-      const policyFilename = `${submissionId}_policy_${policyFile.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-      const policyPath = path.join(uploadsDir, policyFilename)
-      writeFileSync(policyPath, policyBuffer)
-      savedPaths.policy = policyPath
-      db.prepare('INSERT INTO documents (submission_id, doc_type, filename, filepath) VALUES (?, ?, ?, ?)')
-        .run(submissionId, 'policy', policyFile.name, policyPath)
+      const policyStoragePath = `${submissionId}/policy_${policyFile.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+      await supabase.storage.from('documents').upload(policyStoragePath, policyBuffer, {
+        contentType: 'application/pdf',
+      })
+
+      await supabase.from('documents').insert({
+        submission_id: submissionId,
+        doc_type: 'policy',
+        filename: policyFile.name,
+        storage_path: policyStoragePath,
+        extracted_text: preExtractedPolicy || null,
+        processed_at: preExtractedPolicy ? new Date().toISOString() : null,
+      })
     }
 
-    // Use pre-extracted text from client if available (offloads processing to uploader's machine)
-    // Fall back to server-side extraction only if client didn't provide text
-    let accord25Text = preExtractedAccord25
-    let policyText: string | null = preExtractedPolicy || null
-
-    if (!accord25Text) {
-      try {
-        accord25Text = await extractPdfText(savedPaths.accord25)
-      } catch {
-        accord25Text = '[PDF text extraction failed]'
-      }
-    }
-
-    if (!policyText && savedPaths.policy) {
-      try {
-        policyText = await extractPdfText(savedPaths.policy)
-      } catch {
-        policyText = null
-      }
-    }
-
-    // Persist extracted text
-    db.prepare("UPDATE documents SET extracted_text = ?, processed_at = datetime('now') WHERE submission_id = ? AND doc_type = ?")
-      .run(accord25Text, submissionId, 'accord25')
-    if (policyText && savedPaths.policy) {
-      db.prepare("UPDATE documents SET extracted_text = ?, processed_at = datetime('now') WHERE submission_id = ? AND doc_type = ?")
-        .run(policyText, submissionId, 'policy')
-    }
+    const accord25Text = preExtractedAccord25 || '[PDF text extraction pending]'
+    const policyText: string | null = preExtractedPolicy || null
 
     // Find matching schedule requirements
-    const schedule = db.prepare('SELECT * FROM schedule WHERE trade = ?').get(trade) as Record<string, unknown> | undefined
+    const { data: schedule } = await supabase
+      .from('schedule')
+      .select('*')
+      .eq('trade', trade)
+      .single()
 
     // Run AI analysis
     try {
       const analysis = await analyzeAccord25(accord25Text, policyText, schedule || null)
-      db.prepare(`
-        INSERT INTO ai_analysis (submission_id, cg_numbers, limits_found, limits_met, issues, flags, checklist, raw_response)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(submission_id) DO UPDATE SET
-          cg_numbers = excluded.cg_numbers,
-          limits_found = excluded.limits_found,
-          limits_met = excluded.limits_met,
-          issues = excluded.issues,
-          flags = excluded.flags,
-          checklist = excluded.checklist,
-          raw_response = excluded.raw_response,
-          created_at = datetime('now')
-      `).run(
-        submissionId,
-        JSON.stringify(analysis.cg_numbers),
-        JSON.stringify(analysis.limits_found),
-        analysis.limits_met ? 1 : 0,
-        JSON.stringify(analysis.issues),
-        JSON.stringify(analysis.flags),
-        JSON.stringify(analysis.checklist || {}),
-        JSON.stringify(analysis)
-      )
+      await supabase.from('ai_analysis').upsert({
+        submission_id: submissionId,
+        cg_numbers: analysis.cg_numbers,
+        limits_found: analysis.limits_found,
+        limits_met: analysis.limits_met ?? false,
+        issues: analysis.issues,
+        flags: analysis.flags,
+        checklist: analysis.checklist || {},
+        raw_response: analysis,
+      }, { onConflict: 'submission_id' })
     } catch (aiError) {
       console.error('AI analysis failed:', aiError)
-      db.prepare('INSERT OR IGNORE INTO ai_analysis (submission_id, issues) VALUES (?, ?)')
-        .run(submissionId, JSON.stringify(['AI analysis failed — please re-run manually']))
+      await supabase.from('ai_analysis').insert({
+        submission_id: submissionId,
+        issues: ['AI analysis failed — please re-run manually'],
+      })
     }
 
     return NextResponse.json({ submissionId }, { status: 201 })

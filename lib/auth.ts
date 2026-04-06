@@ -1,82 +1,116 @@
-import crypto from 'crypto'
-import { cookies } from 'next/headers'
-import getDb from './db'
+/**
+ * Authentication helpers built on Supabase Auth.
+ * Supports email/password login with TOTP-based 2FA.
+ */
 
-export const SESSION_COOKIE = 'vcc_session'
-export const SESSION_DURATION_DAYS = 30
+import { createSupabaseServerClient, createSupabaseAdmin } from './supabase'
 
-export function hashPassword(password: string): string {
-  const salt = crypto.randomBytes(16).toString('hex')
-  const hash = crypto.scryptSync(password, salt, 64).toString('hex')
-  return `${salt}:${hash}`
-}
-
-export function verifyPassword(password: string, stored: string): boolean {
-  const [salt, hash] = stored.split(':')
-  const attemptHash = crypto.scryptSync(password, salt, 64).toString('hex')
-  return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(attemptHash, 'hex'))
-}
-
-export function createSession(userId: number): string {
-  const db = getDb()
-  const token = crypto.randomBytes(32).toString('hex')
-  const expiresAt = new Date(Date.now() + SESSION_DURATION_DAYS * 24 * 60 * 60 * 1000).toISOString()
-  db.prepare('INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)').run(userId, token, expiresAt)
-  // Clean up old expired sessions
-  db.prepare("DELETE FROM sessions WHERE expires_at < datetime('now')").run()
-  return token
-}
-
-export function deleteSession(token: string): void {
-  const db = getDb()
-  db.prepare('DELETE FROM sessions WHERE token = ?').run(token)
-}
+export const SESSION_COOKIE = 'sb-access-token' // Supabase manages its own cookies
 
 export interface SessionUser {
-  id: number
+  id: string
   email: string
   name: string
   role: string
 }
 
-export function getSessionUser(token: string): SessionUser | null {
-  const db = getDb()
-  const row = db.prepare(`
-    SELECT u.id, u.email, u.name, u.role
-    FROM sessions s
-    JOIN users u ON u.id = s.user_id
-    WHERE s.token = ? AND s.expires_at > datetime('now')
-  `).get(token) as SessionUser | undefined
-  return row ?? null
-}
-
+// ---------------------------------------------------------------------------
+// Get the currently authenticated user from Supabase session cookies
+// ---------------------------------------------------------------------------
 export async function getCurrentUser(): Promise<SessionUser | null> {
   try {
-    const cookieStore = await cookies()
-    const token = cookieStore.get(SESSION_COOKIE)?.value
-    if (!token) return null
-    return getSessionUser(token)
+    const supabase = await createSupabaseServerClient()
+    const { data: { user }, error } = await supabase.auth.getUser()
+    if (error || !user) return null
+
+    // Fetch profile from our users table
+    const { data: profile } = await supabase
+      .from('users')
+      .select('name, role')
+      .eq('id', user.id)
+      .single()
+
+    return {
+      id: user.id,
+      email: user.email ?? '',
+      name: profile?.name ?? user.email?.split('@')[0] ?? '',
+      role: profile?.role ?? 'reviewer',
+    }
   } catch {
     return null
   }
 }
 
-export function getTokenFromRequest(req: Request): string | null {
-  const cookieHeader = req.headers.get('cookie') ?? ''
-  const match = cookieHeader.match(new RegExp(`${SESSION_COOKIE}=([^;]+)`))
-  return match?.[1] ?? null
+// ---------------------------------------------------------------------------
+// Require authenticated user from request (for API routes)
+// ---------------------------------------------------------------------------
+export async function requireAuth(): Promise<SessionUser | null> {
+  return getCurrentUser()
 }
 
-export function requireAdmin(req: Request): SessionUser | null {
-  const token = getTokenFromRequest(req)
-  if (!token) return null
-  const user = getSessionUser(token)
+// ---------------------------------------------------------------------------
+// Require admin role
+// ---------------------------------------------------------------------------
+export async function requireAdmin(): Promise<SessionUser | null> {
+  const user = await getCurrentUser()
   if (!user || user.role !== 'admin') return null
   return user
 }
 
-export function requireAuth(req: Request): SessionUser | null {
-  const token = getTokenFromRequest(req)
-  if (!token) return null
-  return getSessionUser(token)
+// ---------------------------------------------------------------------------
+// Sign up a new user (admin-only action)
+// Uses service-role client to bypass RLS
+// ---------------------------------------------------------------------------
+export async function createUser(
+  email: string,
+  password: string,
+  name: string,
+  role: 'admin' | 'reviewer'
+): Promise<{ id: string } | { error: string }> {
+  const admin = createSupabaseAdmin()
+
+  // Create auth user
+  const { data, error } = await admin.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true, // auto-confirm since admin is creating
+  })
+  if (error) return { error: error.message }
+
+  // Insert profile row
+  const { error: profileError } = await admin
+    .from('users')
+    .insert({ id: data.user.id, email, name, role })
+
+  if (profileError) {
+    // Rollback: delete auth user if profile insert fails
+    await admin.auth.admin.deleteUser(data.user.id)
+    return { error: profileError.message }
+  }
+
+  return { id: data.user.id }
+}
+
+// ---------------------------------------------------------------------------
+// Delete a user (admin-only action)
+// ---------------------------------------------------------------------------
+export async function deleteUser(userId: string): Promise<void> {
+  const admin = createSupabaseAdmin()
+  await admin.from('users').delete().eq('id', userId)
+  await admin.from('audit_log').delete().eq('user_id', userId)
+  await admin.auth.admin.deleteUser(userId)
+}
+
+// ---------------------------------------------------------------------------
+// Check if user has MFA enrolled
+// ---------------------------------------------------------------------------
+export async function getUserMfaStatus(userId: string): Promise<{
+  enrolled: boolean
+  verified: boolean
+}> {
+  const admin = createSupabaseAdmin()
+  const { data } = await admin.auth.admin.mfa.listFactors({ userId })
+  const totpFactors = data?.factors?.filter(f => f.factor_type === 'totp') ?? []
+  const verified = totpFactors.some(f => f.status === 'verified')
+  return { enrolled: totpFactors.length > 0, verified }
 }

@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
-import getDb from '@/lib/db'
+import { getDb } from '@/lib/db'
 
 export async function PUT(req: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const db = getDb()
+    const supabase = await getDb()
     const body = await req.json() as {
       trade?: string
       gl_per_occurrence?: number
@@ -14,27 +14,20 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
       notes?: string
     }
 
-    db.prepare(`
-      UPDATE schedule SET
-        trade = COALESCE(?, trade),
-        gl_per_occurrence = ?,
-        gl_aggregate = ?,
-        workers_comp = ?,
-        auto_liability = ?,
-        umbrella = ?,
-        notes = ?
-      WHERE id = ?
-    `).run(
-      body.trade || null,
-      body.gl_per_occurrence ?? null,
-      body.gl_aggregate ?? null,
-      body.workers_comp ?? null,
-      body.auto_liability ?? null,
-      body.umbrella ?? null,
-      body.notes ?? null,
-      parseInt(params.id)
-    )
+    const { error } = await supabase
+      .from('schedule')
+      .update({
+        trade: body.trade ?? undefined,
+        gl_per_occurrence: body.gl_per_occurrence ?? null,
+        gl_aggregate: body.gl_aggregate ?? null,
+        workers_comp: body.workers_comp ?? null,
+        auto_liability: body.auto_liability ?? null,
+        umbrella: body.umbrella ?? null,
+        notes: body.notes ?? null,
+      })
+      .eq('id', parseInt(params.id))
 
+    if (error) throw error
     return NextResponse.json({ success: true })
   } catch (err) {
     console.error(err)
@@ -44,8 +37,9 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
 
 export async function DELETE(_req: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const db = getDb()
-    db.prepare('DELETE FROM schedule WHERE id = ?').run(parseInt(params.id))
+    const supabase = await getDb()
+    const { error } = await supabase.from('schedule').delete().eq('id', parseInt(params.id))
+    if (error) throw error
     return NextResponse.json({ success: true })
   } catch (err) {
     console.error(err)

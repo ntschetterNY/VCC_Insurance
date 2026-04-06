@@ -1,57 +1,73 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { unlinkSync, existsSync } from 'fs'
-import getDb from '@/lib/db'
+import { getDb } from '@/lib/db'
 import { requireAuth, requireAdmin } from '@/lib/auth'
 
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
-  const user = requireAuth(_req)
+  const user = await requireAuth()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   try {
-    const db = getDb()
+    const supabase = await getDb()
     const id = parseInt(params.id)
 
-    const submission = db.prepare(`
-      SELECT s.*, sub.name AS sub_name, sub.trade, sub.tier,
-             u.name AS assigned_user_name
-      FROM submissions s
-      JOIN subcontractors sub ON sub.id = s.sub_id
-      LEFT JOIN users u ON u.id = s.assigned_to
-      WHERE s.id = ?
-    `).get(id)
+    const { data: submission, error } = await supabase
+      .from('submissions')
+      .select(`
+        *,
+        subcontractors ( name, trade, tier ),
+        assigned_user:users!submissions_assigned_to_fkey ( name )
+      `)
+      .eq('id', id)
+      .single()
 
-    if (!submission) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (error || !submission) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-    const documents = db.prepare('SELECT id, submission_id, doc_type, filename, processed_at FROM documents WHERE submission_id = ?').all(id)
-    const analysis = db.prepare('SELECT * FROM ai_analysis WHERE submission_id = ?').get(id) as Record<string, string> | undefined
-    const flags = db.prepare('SELECT * FROM reviewer_flags WHERE submission_id = ? ORDER BY created_at DESC').all(id)
+    const { data: documents } = await supabase
+      .from('documents')
+      .select('id, submission_id, doc_type, filename, processed_at')
+      .eq('submission_id', id)
 
-    let parsedAnalysis = null
-    if (analysis) {
-      parsedAnalysis = {
-        ...analysis,
-        cg_numbers: JSON.parse(analysis.cg_numbers || '[]'),
-        limits_found: JSON.parse(analysis.limits_found || '{}'),
-        issues: JSON.parse(analysis.issues || '[]'),
-        flags: JSON.parse(analysis.flags || '[]'),
-        checklist: JSON.parse(analysis.checklist || '{}'),
-      }
+    const { data: analysis } = await supabase
+      .from('ai_analysis')
+      .select('*')
+      .eq('submission_id', id)
+      .single()
+
+    const { data: flags } = await supabase
+      .from('reviewer_flags')
+      .select('*')
+      .eq('submission_id', id)
+      .order('created_at', { ascending: false })
+
+    const sub = submission.subcontractors as Record<string, unknown> | null
+    const trade = sub?.trade as string | undefined
+
+    let schedule = null
+    if (trade) {
+      const { data } = await supabase
+        .from('schedule')
+        .select('*')
+        .eq('trade', trade)
+        .single()
+      schedule = data
     }
 
-    const sub = submission as Record<string, string>
-    const schedule = sub.trade
-      ? db.prepare('SELECT * FROM schedule WHERE trade = ?').get(sub.trade)
-      : null
-
-    const allUsers = db.prepare('SELECT id, name, role FROM users ORDER BY name').all()
+    const { data: allUsers } = await supabase
+      .from('users')
+      .select('id, name, role')
+      .order('name')
 
     return NextResponse.json({
-      ...(submission as object),
-      documents,
-      ai_analysis: parsedAnalysis,
-      reviewer_flags: flags,
-      schedule: schedule || null,
-      available_reviewers: allUsers,
+      ...submission,
+      sub_name: sub?.name ?? '',
+      trade: sub?.trade ?? '',
+      tier: sub?.tier ?? '',
+      assigned_user_name: (submission.assigned_user as Record<string, unknown> | null)?.name ?? null,
+      documents: documents ?? [],
+      ai_analysis: analysis ?? null,
+      reviewer_flags: flags ?? [],
+      schedule,
+      available_reviewers: allUsers ?? [],
     })
   } catch (err) {
     console.error(err)
@@ -60,37 +76,30 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
-  const user = requireAuth(req)
+  const user = await requireAuth()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   try {
-    const db = getDb()
+    const supabase = await getDb()
     const id = parseInt(params.id)
-    const body = await req.json() as { status?: string; reviewer_notes?: string; assigned_to?: number | null }
+    const body = await req.json() as { status?: string; reviewer_notes?: string; assigned_to?: string | null }
 
-    const fields: string[] = []
-    const values: unknown[] = []
-
+    const updates: Record<string, unknown> = {}
     if (body.status) {
-      fields.push('status = ?')
-      values.push(body.status)
+      updates.status = body.status
       if (body.status === 'approved' || body.status === 'rejected') {
-        fields.push("reviewed_at = datetime('now')")
+        updates.reviewed_at = new Date().toISOString()
       }
     }
-    if (body.reviewer_notes !== undefined) {
-      fields.push('reviewer_notes = ?')
-      values.push(body.reviewer_notes)
-    }
-    if (body.assigned_to !== undefined) {
-      fields.push('assigned_to = ?')
-      values.push(body.assigned_to)
+    if (body.reviewer_notes !== undefined) updates.reviewer_notes = body.reviewer_notes
+    if (body.assigned_to !== undefined) updates.assigned_to = body.assigned_to
+
+    if (Object.keys(updates).length === 0) {
+      return NextResponse.json({ error: 'Nothing to update' }, { status: 400 })
     }
 
-    if (fields.length === 0) return NextResponse.json({ error: 'Nothing to update' }, { status: 400 })
-
-    values.push(id)
-    db.prepare(`UPDATE submissions SET ${fields.join(', ')} WHERE id = ?`).run(...values)
+    const { error } = await supabase.from('submissions').update(updates).eq('id', id)
+    if (error) throw error
 
     return NextResponse.json({ success: true })
   } catch (err) {
@@ -100,28 +109,32 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 }
 
 export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
-  const admin = requireAdmin(req)
+  const admin = await requireAdmin()
   if (!admin) return NextResponse.json({ error: 'Forbidden — admin only' }, { status: 403 })
 
   try {
-    const db = getDb()
+    const supabase = await getDb()
     const id = parseInt(params.id)
 
-    // Get all documents to delete files from disk
-    const documents = db.prepare('SELECT filepath FROM documents WHERE submission_id = ?').all(id) as Array<{ filepath: string }>
+    // Delete associated documents from Supabase storage
+    const { data: documents } = await supabase
+      .from('documents')
+      .select('storage_path')
+      .eq('submission_id', id)
 
-    const deleteAll = db.transaction(() => {
-      db.prepare('DELETE FROM reviewer_flags WHERE submission_id = ?').run(id)
-      db.prepare('DELETE FROM ai_analysis WHERE submission_id = ?').run(id)
-      db.prepare('DELETE FROM documents WHERE submission_id = ?').run(id)
-      db.prepare('DELETE FROM submissions WHERE id = ?').run(id)
-    })
-    deleteAll()
+    // Delete DB records (cascade should handle children, but be explicit)
+    await supabase.from('reviewer_flags').delete().eq('submission_id', id)
+    await supabase.from('ai_analysis').delete().eq('submission_id', id)
+    await supabase.from('documents').delete().eq('submission_id', id)
+    await supabase.from('submissions').delete().eq('id', id)
 
-    // Remove files from disk after DB cleanup
-    for (const doc of documents) {
-      if (doc.filepath && existsSync(doc.filepath)) {
-        try { unlinkSync(doc.filepath) } catch { /* ignore */ }
+    // Remove files from storage bucket
+    if (documents && documents.length > 0) {
+      const paths = documents
+        .map((d: Record<string, unknown>) => d.storage_path as string)
+        .filter(Boolean)
+      if (paths.length > 0) {
+        await supabase.storage.from('documents').remove(paths)
       }
     }
 

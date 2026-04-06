@@ -1,7 +1,8 @@
 import type { NextConfig } from 'next'
 
 const config: NextConfig = {
-  serverExternalPackages: ['better-sqlite3', 'pdf-parse'],
+  // pdf-parse is still used as a fallback for server-side PDF extraction
+  serverExternalPackages: ['pdf-parse'],
 }
 
 export default config
