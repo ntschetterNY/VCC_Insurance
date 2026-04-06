@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createSupabaseServerClient } from '@/lib/supabase'
+import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { rateLimit, sanitizeString, isValidEmail } from '@/lib/security'
 
 export async function POST(req: NextRequest) {
@@ -23,30 +23,51 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid email format' }, { status: 400 })
     }
 
-    const supabase = await createSupabaseServerClient()
+    // We must track cookies on the response object directly so they
+    // are sent back to the browser alongside our JSON body.
+    const res = NextResponse.json({})
+    const cookiesToSet: { name: string; value: string; options: CookieOptions }[] = []
+
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          get(name: string) {
+            return req.cookies.get(name)?.value
+          },
+          set(name: string, value: string, options: CookieOptions) {
+            cookiesToSet.push({ name, value, options })
+          },
+          remove(name: string, options: CookieOptions) {
+            cookiesToSet.push({ name, value: '', options: { ...options, maxAge: 0 } })
+          },
+        },
+      }
+    )
+
     const { data, error } = await supabase.auth.signInWithPassword({ email, password })
 
     if (error) {
       return NextResponse.json({ error: 'Invalid email or password' }, { status: 401 })
     }
 
-    // Check if MFA is required (user has enrolled TOTP factors)
-    // When MFA is enrolled, Supabase returns an aal1 session and the user
-    // must complete a second step to reach aal2.
+    // Check if MFA is required
     const { data: aalData } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
     if (aalData && aalData.nextLevel === 'aal2' && aalData.currentLevel === 'aal1') {
-      // List the user's TOTP factors so the client can challenge
       const { data: factorsData } = await supabase.auth.mfa.listFactors()
       const totpFactor = factorsData?.totp?.[0]
 
-      return NextResponse.json({
+      // Still set cookies so the aal1 session is persisted for the MFA step
+      const mfaRes = NextResponse.json({
         mfa_required: true,
         factor_id: totpFactor?.id,
-        user: {
-          id: data.user.id,
-          email: data.user.email,
-        },
+        user: { id: data.user.id, email: data.user.email },
       })
+      for (const c of cookiesToSet) {
+        mfaRes.cookies.set(c.name, c.value, c.options)
+      }
+      return mfaRes
     }
 
     // Fetch profile
@@ -56,7 +77,7 @@ export async function POST(req: NextRequest) {
       .eq('id', data.user.id)
       .single()
 
-    return NextResponse.json({
+    const successRes = NextResponse.json({
       user: {
         id: data.user.id,
         email: data.user.email,
@@ -64,6 +85,13 @@ export async function POST(req: NextRequest) {
         role: profile?.role ?? 'reviewer',
       },
     })
+
+    // Apply all cookies Supabase set during signIn to the response
+    for (const c of cookiesToSet) {
+      successRes.cookies.set(c.name, c.value, c.options)
+    }
+
+    return successRes
   } catch (err) {
     console.error('Login error:', err)
     return NextResponse.json({ error: 'Login failed' }, { status: 500 })
