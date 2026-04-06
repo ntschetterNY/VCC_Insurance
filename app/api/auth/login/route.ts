@@ -49,7 +49,11 @@ export async function POST(req: NextRequest) {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password })
 
     if (error) {
-      return NextResponse.json({ error: 'Invalid email or password' }, { status: 401 })
+      console.error('Supabase auth error:', error.message, error.status)
+      return NextResponse.json({
+        error: 'Invalid email or password',
+        detail: error.message,
+      }, { status: 401 })
     }
 
     // Check if MFA is required

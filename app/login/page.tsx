@@ -27,7 +27,10 @@ export default function LoginPage() {
       })
       const body = await res.json()
 
-      if (!res.ok) throw new Error(body.error || 'Login failed')
+      if (!res.ok) {
+        const msg = body.detail ? `${body.error} (${body.detail})` : (body.error || 'Login failed')
+        throw new Error(msg)
+      }
 
       if (body.mfa_required) {
         setFactorId(body.factor_id)
