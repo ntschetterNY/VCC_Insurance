@@ -1,34 +1,71 @@
 import { NextRequest, NextResponse } from 'next/server'
-import getDb from '@/lib/db'
-import { verifyPassword, createSession, SESSION_COOKIE, SESSION_DURATION_DAYS } from '@/lib/auth'
+import { createSupabaseServerClient } from '@/lib/supabase'
+import { rateLimit, sanitizeString, isValidEmail } from '@/lib/security'
 
 export async function POST(req: NextRequest) {
   try {
-    const { email, password } = await req.json() as { email: string; password: string }
+    const ip = req.headers.get('x-forwarded-for') ?? req.headers.get('x-real-ip') ?? 'unknown'
+    if (!rateLimit(`login:${ip}`, { maxRequests: 5, windowMs: 60_000 })) {
+      return NextResponse.json(
+        { error: 'Too many login attempts. Please try again in a minute.' },
+        { status: 429 }
+      )
+    }
+
+    const body = await req.json() as { email?: string; password?: string }
+    const email = sanitizeString(body.email ?? '').toLowerCase()
+    const password = body.password ?? ''
+
     if (!email || !password) {
       return NextResponse.json({ error: 'Email and password are required' }, { status: 400 })
     }
+    if (!isValidEmail(email)) {
+      return NextResponse.json({ error: 'Invalid email format' }, { status: 400 })
+    }
 
-    const db = getDb()
-    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.toLowerCase().trim()) as {
-      id: number; email: string; name: string; password_hash: string; role: string
-    } | undefined
+    const supabase = await createSupabaseServerClient()
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
 
-    if (!user || !verifyPassword(password, user.password_hash)) {
+    if (error) {
       return NextResponse.json({ error: 'Invalid email or password' }, { status: 401 })
     }
 
-    const token = createSession(user.id)
-    const res = NextResponse.json({ user: { id: user.id, email: user.email, name: user.name, role: user.role } })
-    res.cookies.set(SESSION_COOKIE, token, {
-      httpOnly: true,
-      sameSite: 'lax',
-      path: '/',
-      maxAge: SESSION_DURATION_DAYS * 24 * 60 * 60,
+    // Check if MFA is required (user has enrolled TOTP factors)
+    // When MFA is enrolled, Supabase returns an aal1 session and the user
+    // must complete a second step to reach aal2.
+    const { data: aalData } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+    if (aalData && aalData.nextLevel === 'aal2' && aalData.currentLevel === 'aal1') {
+      // List the user's TOTP factors so the client can challenge
+      const { data: factorsData } = await supabase.auth.mfa.listFactors()
+      const totpFactor = factorsData?.totp?.[0]
+
+      return NextResponse.json({
+        mfa_required: true,
+        factor_id: totpFactor?.id,
+        user: {
+          id: data.user.id,
+          email: data.user.email,
+        },
+      })
+    }
+
+    // Fetch profile
+    const { data: profile } = await supabase
+      .from('users')
+      .select('name, role')
+      .eq('id', data.user.id)
+      .single()
+
+    return NextResponse.json({
+      user: {
+        id: data.user.id,
+        email: data.user.email,
+        name: profile?.name ?? data.user.email?.split('@')[0],
+        role: profile?.role ?? 'reviewer',
+      },
     })
-    return res
   } catch (err) {
-    console.error(err)
+    console.error('Login error:', err)
     return NextResponse.json({ error: 'Login failed' }, { status: 500 })
   }
 }

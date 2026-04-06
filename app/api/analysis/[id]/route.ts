@@ -1,22 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
-import getDb from '@/lib/db'
-import { extractPdfText } from '@/lib/pdf'
+import { getDb } from '@/lib/db'
 import { analyzeAccord25 } from '@/lib/ai'
 
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const db = getDb()
-    const analysis = db.prepare('SELECT * FROM ai_analysis WHERE submission_id = ?').get(parseInt(params.id)) as Record<string, string> | undefined
-    if (!analysis) return NextResponse.json({ error: 'No analysis found' }, { status: 404 })
+    const supabase = await getDb()
+    const { data: analysis, error } = await supabase
+      .from('ai_analysis')
+      .select('*')
+      .eq('submission_id', parseInt(params.id))
+      .single()
 
-    return NextResponse.json({
-      ...analysis,
-      cg_numbers: JSON.parse(analysis.cg_numbers || '[]'),
-      limits_found: JSON.parse(analysis.limits_found || '{}'),
-      issues: JSON.parse(analysis.issues || '[]'),
-      flags: JSON.parse(analysis.flags || '[]'),
-      checklist: JSON.parse(analysis.checklist || '{}'),
-    })
+    if (error || !analysis) return NextResponse.json({ error: 'No analysis found' }, { status: 404 })
+    return NextResponse.json(analysis)
   } catch (err) {
     console.error(err)
     return NextResponse.json({ error: 'Failed to fetch analysis' }, { status: 500 })
@@ -25,57 +21,47 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
 
 export async function POST(_req: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const db = getDb()
+    const supabase = await getDb()
     const submissionId = parseInt(params.id)
 
-    const submission = db.prepare(`
-      SELECT s.*, sub.trade FROM submissions s
-      JOIN subcontractors sub ON sub.id = s.sub_id
-      WHERE s.id = ?
-    `).get(submissionId) as { trade: string } | undefined
+    const { data: submission, error: subErr } = await supabase
+      .from('submissions')
+      .select('*, subcontractors ( trade )')
+      .eq('id', submissionId)
+      .single()
 
-    if (!submission) return NextResponse.json({ error: 'Submission not found' }, { status: 404 })
+    if (subErr || !submission) return NextResponse.json({ error: 'Submission not found' }, { status: 404 })
 
-    const documents = db.prepare('SELECT * FROM documents WHERE submission_id = ?').all(submissionId) as Array<{ doc_type: string; filepath: string; extracted_text: string }>
+    const { data: documents } = await supabase
+      .from('documents')
+      .select('*')
+      .eq('submission_id', submissionId)
 
-    const accord25Doc = documents.find((d) => d.doc_type === 'accord25')
-    const policyDoc = documents.find((d) => d.doc_type === 'policy')
+    const accord25Doc = documents?.find((d: Record<string, unknown>) => d.doc_type === 'accord25')
+    const policyDoc = documents?.find((d: Record<string, unknown>) => d.doc_type === 'policy')
 
-    let accord25Text = accord25Doc?.extracted_text || ''
-    let policyText: string | null = policyDoc?.extracted_text || null
+    const accord25Text = (accord25Doc?.extracted_text as string) || ''
+    const policyText: string | null = (policyDoc?.extracted_text as string) || null
 
-    if (!accord25Text && accord25Doc?.filepath) {
-      accord25Text = await extractPdfText(accord25Doc.filepath)
-    }
-    if (!policyText && policyDoc?.filepath) {
-      policyText = await extractPdfText(policyDoc.filepath)
-    }
+    const trade = (submission.subcontractors as Record<string, unknown>)?.trade as string
+    const { data: schedule } = await supabase
+      .from('schedule')
+      .select('*')
+      .eq('trade', trade)
+      .single()
 
-    const schedule = db.prepare('SELECT * FROM schedule WHERE trade = ?').get(submission.trade) as Record<string, unknown> | undefined
     const analysis = await analyzeAccord25(accord25Text, policyText, schedule || null)
 
-    db.prepare(`
-      INSERT INTO ai_analysis (submission_id, cg_numbers, limits_found, limits_met, issues, flags, checklist, raw_response)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(submission_id) DO UPDATE SET
-        cg_numbers = excluded.cg_numbers,
-        limits_found = excluded.limits_found,
-        limits_met = excluded.limits_met,
-        issues = excluded.issues,
-        flags = excluded.flags,
-        checklist = excluded.checklist,
-        raw_response = excluded.raw_response,
-        created_at = datetime('now')
-    `).run(
-      submissionId,
-      JSON.stringify(analysis.cg_numbers),
-      JSON.stringify(analysis.limits_found),
-      analysis.limits_met ? 1 : 0,
-      JSON.stringify(analysis.issues),
-      JSON.stringify(analysis.flags),
-      JSON.stringify(analysis.checklist || {}),
-      JSON.stringify(analysis)
-    )
+    await supabase.from('ai_analysis').upsert({
+      submission_id: submissionId,
+      cg_numbers: analysis.cg_numbers,
+      limits_found: analysis.limits_found,
+      limits_met: analysis.limits_met ?? false,
+      issues: analysis.issues,
+      flags: analysis.flags,
+      checklist: analysis.checklist || {},
+      raw_response: analysis,
+    }, { onConflict: 'submission_id' })
 
     return NextResponse.json({ success: true, analysis })
   } catch (err) {

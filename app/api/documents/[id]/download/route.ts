@@ -1,41 +1,43 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { readFileSync, existsSync } from 'fs'
-import path from 'path'
-import getDb from '@/lib/db'
+import { getDb } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
-  const user = requireAuth(req)
+export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
+  const user = await requireAuth()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const db = getDb()
-  const doc = db.prepare('SELECT * FROM documents WHERE id = ?').get(parseInt(params.id)) as {
-    id: number; filename: string; filepath: string; doc_type: string
-  } | undefined
+  const supabase = await getDb()
+  const { data: doc, error } = await supabase
+    .from('documents')
+    .select('*')
+    .eq('id', parseInt(params.id))
+    .single()
 
-  if (!doc) return NextResponse.json({ error: 'Document not found' }, { status: 404 })
+  if (error || !doc) return NextResponse.json({ error: 'Document not found' }, { status: 404 })
 
-  const filepath = doc.filepath
-  if (!existsSync(filepath)) {
-    return NextResponse.json({ error: 'File not found on disk' }, { status: 404 })
+  const storagePath = doc.storage_path as string
+  if (!storagePath) {
+    return NextResponse.json({ error: 'File not available' }, { status: 404 })
   }
 
-  // Safety: ensure the file is within the uploads directory
-  const uploadsDir = path.join(process.cwd(), 'uploads')
-  const resolvedPath = path.resolve(filepath)
-  if (!resolvedPath.startsWith(uploadsDir)) {
-    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  // Download from Supabase Storage
+  const { data: fileData, error: downloadError } = await supabase.storage
+    .from('documents')
+    .download(storagePath)
+
+  if (downloadError || !fileData) {
+    return NextResponse.json({ error: 'File not found in storage' }, { status: 404 })
   }
 
-  const fileBuffer = readFileSync(resolvedPath)
-  const filename = doc.filename || path.basename(resolvedPath)
+  const buffer = Buffer.from(await fileData.arrayBuffer())
+  const filename = (doc.filename as string) || 'document.pdf'
 
-  return new NextResponse(fileBuffer, {
+  return new NextResponse(buffer, {
     status: 200,
     headers: {
       'Content-Type': 'application/pdf',
       'Content-Disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
-      'Content-Length': String(fileBuffer.length),
+      'Content-Length': String(buffer.length),
     },
   })
 }

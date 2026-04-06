@@ -1,37 +1,51 @@
 import { NextRequest, NextResponse } from 'next/server'
-import getDb from '@/lib/db'
-import { hashPassword, requireAdmin } from '@/lib/auth'
+import { getDb } from '@/lib/db'
+import { requireAdmin, createUser } from '@/lib/auth'
+import { sanitizeString, isValidEmail } from '@/lib/security'
 
-export async function GET(req: NextRequest) {
-  const user = requireAdmin(req)
+export async function GET() {
+  const user = await requireAdmin()
   if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-  const db = getDb()
-  const users = db.prepare('SELECT id, email, name, role, created_at FROM users ORDER BY created_at DESC').all()
-  return NextResponse.json(users)
+  const supabase = await getDb()
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, email, name, role, created_at')
+    .order('created_at', { ascending: false })
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  return NextResponse.json(data)
 }
 
 export async function POST(req: NextRequest) {
-  const admin = requireAdmin(req)
+  const admin = await requireAdmin()
   if (!admin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-  const { email, name, password, role } = await req.json() as {
+  const body = await req.json() as {
     email: string; name: string; password: string; role: string
   }
+
+  const email = sanitizeString(body.email ?? '').toLowerCase()
+  const name = sanitizeString(body.name ?? '')
+  const password = body.password ?? ''
+  const role = body.role as 'admin' | 'reviewer'
+
   if (!email || !name || !password) {
     return NextResponse.json({ error: 'Email, name, and password are required' }, { status: 400 })
+  }
+  if (!isValidEmail(email)) {
+    return NextResponse.json({ error: 'Invalid email format' }, { status: 400 })
   }
   if (!['admin', 'reviewer'].includes(role)) {
     return NextResponse.json({ error: 'Role must be admin or reviewer' }, { status: 400 })
   }
-
-  const db = getDb()
-  try {
-    const result = db.prepare(
-      'INSERT INTO users (email, name, password_hash, role) VALUES (?, ?, ?, ?)'
-    ).run(email.toLowerCase().trim(), name.trim(), hashPassword(password), role)
-    return NextResponse.json({ id: result.lastInsertRowid }, { status: 201 })
-  } catch {
-    return NextResponse.json({ error: 'Email already exists' }, { status: 409 })
+  if (password.length < 8) {
+    return NextResponse.json({ error: 'Password must be at least 8 characters' }, { status: 400 })
   }
+
+  const result = await createUser(email, password, name, role)
+  if ('error' in result) {
+    return NextResponse.json({ error: result.error }, { status: 409 })
+  }
+  return NextResponse.json({ id: result.id }, { status: 201 })
 }

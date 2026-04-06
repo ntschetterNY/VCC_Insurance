@@ -1,24 +1,34 @@
-import { NextRequest, NextResponse } from 'next/server'
-import getDb from '@/lib/db'
+import { NextResponse } from 'next/server'
+import { getDb } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
+import { decryptField } from '@/lib/security'
 
-function getProcoreSettings(db: ReturnType<typeof getDb>) {
-  const rows = db.prepare('SELECT key, value FROM settings WHERE key LIKE ?').all('procore_%') as Array<{ key: string; value: string }>
+async function getProcoreSettings() {
+  const supabase = await getDb()
+  const { data: rows } = await supabase
+    .from('settings')
+    .select('key, value')
+    .like('key', 'procore_%')
+
   const settings: Record<string, string> = {}
-  rows.forEach((r) => { settings[r.key] = r.value })
+  ;(rows ?? []).forEach((r: { key: string; value: string }) => { settings[r.key] = r.value })
+
+  let accessToken = settings['procore_access_token'] ?? ''
+  if (accessToken) {
+    try { accessToken = decryptField(accessToken) } catch { /* use raw */ }
+  }
+
   return {
-    accessToken: settings['procore_access_token'] ?? '',
+    accessToken,
     companyId: settings['procore_company_id'] ?? '',
   }
 }
 
-// GET /api/procore/projects - list all projects for the configured company
-export async function GET(req: NextRequest) {
-  const user = requireAuth(req)
+export async function GET() {
+  const user = await requireAuth()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const db = getDb()
-  const { accessToken, companyId } = getProcoreSettings(db)
+  const { accessToken, companyId } = await getProcoreSettings()
 
   if (!accessToken || !companyId) {
     return NextResponse.json({ error: 'Procore not configured. Add your credentials in Settings.' }, { status: 400 })
@@ -26,7 +36,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const res = await fetch(
-      `https://api.procore.com/rest/v1.0/projects?company_id=${companyId}`,
+      `https://api.procore.com/rest/v1.0/projects?company_id=${encodeURIComponent(companyId)}`,
       {
         headers: {
           Authorization: `Bearer ${accessToken}`,

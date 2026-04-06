@@ -1,18 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server'
-import getDb from '@/lib/db'
+import { getDb } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
+import { decryptField } from '@/lib/security'
 
-// GET /api/procore/projects/[id]/contracts - list subcontracts for a project
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
-  const user = requireAuth(req)
+export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
+  const user = await requireAuth()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const db = getDb()
-  const rows = db.prepare('SELECT key, value FROM settings WHERE key LIKE ?').all('procore_%') as Array<{ key: string; value: string }>
-  const settings: Record<string, string> = {}
-  rows.forEach((r) => { settings[r.key] = r.value })
+  const supabase = await getDb()
+  const { data: rows } = await supabase
+    .from('settings')
+    .select('key, value')
+    .like('key', 'procore_%')
 
-  const accessToken = settings['procore_access_token'] ?? ''
+  const settings: Record<string, string> = {}
+  ;(rows ?? []).forEach((r: { key: string; value: string }) => { settings[r.key] = r.value })
+
+  let accessToken = settings['procore_access_token'] ?? ''
+  if (accessToken) {
+    try { accessToken = decryptField(accessToken) } catch { /* use raw */ }
+  }
   const companyId = settings['procore_company_id'] ?? ''
 
   if (!accessToken || !companyId) {
@@ -22,9 +29,8 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const projectId = params.id
 
   try {
-    // Fetch subcontracts (commitments) for the project
     const res = await fetch(
-      `https://api.procore.com/rest/v1.0/commitments/contracts?project_id=${projectId}`,
+      `https://api.procore.com/rest/v1.0/commitments/contracts?project_id=${encodeURIComponent(projectId)}`,
       {
         headers: {
           Authorization: `Bearer ${accessToken}`,
