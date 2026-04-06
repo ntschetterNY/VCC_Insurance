@@ -1,28 +1,49 @@
-import { NextResponse } from 'next/server'
-import { createSupabaseServerClient, createSupabaseAdmin } from '@/lib/supabase'
+import { NextRequest, NextResponse } from 'next/server'
+import { createServerClient, type CookieOptions } from '@supabase/ssr'
+import { createSupabaseAdmin } from '@/lib/supabase'
 
 /**
  * POST /api/auth/setup
  * First-time setup: if no admin users exist in public.users,
  * the currently logged-in user can claim the admin role.
- * Works for both new users and existing users with 'reviewer' role.
  */
-export async function POST() {
+export async function POST(req: NextRequest) {
   try {
-    const supabase = await createSupabaseServerClient()
+    // Use request-based cookie pattern (same fix as login route)
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          get(name: string) {
+            return req.cookies.get(name)?.value
+          },
+          set() {},
+          remove() {},
+        },
+      }
+    )
+
     const { data: { user }, error: authError } = await supabase.auth.getUser()
 
     if (authError || !user) {
-      return NextResponse.json({ error: 'You must be logged in' }, { status: 401 })
+      return NextResponse.json(
+        { error: `Not logged in: ${authError?.message ?? 'no session'}` },
+        { status: 401 }
+      )
     }
 
     const adminClient = createSupabaseAdmin()
 
     // Check if any admin users exist
-    const { count: adminCount } = await adminClient
+    const { count: adminCount, error: countError } = await adminClient
       .from('users')
       .select('*', { count: 'exact', head: true })
       .eq('role', 'admin')
+
+    if (countError) {
+      return NextResponse.json({ error: `DB error: ${countError.message}` }, { status: 500 })
+    }
 
     if (adminCount && adminCount > 0) {
       return NextResponse.json(
@@ -46,7 +67,7 @@ export async function POST() {
         .eq('id', user.id)
 
       if (updateError) {
-        return NextResponse.json({ error: updateError.message }, { status: 500 })
+        return NextResponse.json({ error: `Update failed: ${updateError.message}` }, { status: 500 })
       }
     } else {
       // Create new admin profile
@@ -58,7 +79,7 @@ export async function POST() {
       })
 
       if (insertError) {
-        return NextResponse.json({ error: insertError.message }, { status: 500 })
+        return NextResponse.json({ error: `Insert failed: ${insertError.message}` }, { status: 500 })
       }
     }
 
@@ -68,7 +89,10 @@ export async function POST() {
     })
   } catch (err) {
     console.error('Setup error:', err)
-    return NextResponse.json({ error: 'Setup failed' }, { status: 500 })
+    return NextResponse.json(
+      { error: `Setup exception: ${err instanceof Error ? err.message : String(err)}` },
+      { status: 500 }
+    )
   }
 }
 
@@ -79,13 +103,20 @@ export async function POST() {
 export async function GET() {
   try {
     const adminClient = createSupabaseAdmin()
-    const { count } = await adminClient
+    const { count, error } = await adminClient
       .from('users')
       .select('*', { count: 'exact', head: true })
       .eq('role', 'admin')
 
+    if (error) {
+      return NextResponse.json({ setup_required: true, error: error.message })
+    }
+
     return NextResponse.json({ setup_required: !count || count === 0 })
-  } catch {
-    return NextResponse.json({ setup_required: false })
+  } catch (err) {
+    return NextResponse.json({
+      setup_required: true,
+      error: err instanceof Error ? err.message : 'Unknown error',
+    })
   }
 }
