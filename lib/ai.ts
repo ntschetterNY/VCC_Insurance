@@ -8,6 +8,79 @@ const client = new Anthropic({
 const MAX_ACCORD_CHARS = 8000
 const MAX_POLICY_CHARS = 4000
 
+// ---------------------------------------------------------------------------
+// Document classification types
+// ---------------------------------------------------------------------------
+export type DocClassification =
+  | 'accord25'
+  | 'accord28'
+  | 'policy_gl'
+  | 'policy_excess'
+  | 'policy_wc'
+  | 'policy_auto'
+  | 'endorsement'
+  | 'contract'
+  | 'other'
+
+export interface ClassificationResult {
+  doc_type: DocClassification
+  confidence: number
+  description: string
+}
+
+// ---------------------------------------------------------------------------
+// Step 1: Classify document type using Haiku (fast & cheap)
+// ---------------------------------------------------------------------------
+export async function classifyDocument(text: string): Promise<ClassificationResult> {
+  const sample = text.slice(0, 2000) // only need first ~2000 chars for classification
+
+  const message = await client.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 256,
+    messages: [{
+      role: 'user',
+      content: `Classify this insurance document. Return ONLY valid JSON.
+
+Document text (first 2000 chars):
+${sample}
+
+Return JSON matching this structure:
+{
+  "doc_type": "accord25|accord28|policy_gl|policy_excess|policy_wc|policy_auto|endorsement|contract|other",
+  "confidence": 0.0 to 1.0,
+  "description": "Brief description of the document"
+}
+
+Classification rules:
+- "accord25": ACORD 25 Certificate of Liability Insurance
+- "accord28": ACORD 28 Evidence of Commercial Property Insurance
+- "policy_gl": General Liability policy or declarations page
+- "policy_excess": Excess/Umbrella policy or declarations page
+- "policy_wc": Workers Compensation policy or declarations page
+- "policy_auto": Commercial Auto policy or declarations page
+- "endorsement": Policy endorsement (CG 20 10, CG 20 37, waiver of subrogation, etc.)
+- "contract": Subcontract or agreement document
+- "other": Unknown or unrelated document`
+    }],
+  })
+
+  const responseText = message.content[0].type === 'text' ? message.content[0].text : ''
+  const jsonMatch = responseText.match(/\{[\s\S]*\}/)
+
+  if (!jsonMatch) {
+    return { doc_type: 'other', confidence: 0, description: 'Classification failed' }
+  }
+
+  try {
+    return JSON.parse(jsonMatch[0]) as ClassificationResult
+  } catch {
+    return { doc_type: 'other', confidence: 0, description: 'Classification parse error' }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Step 2: Full analysis using Sonnet (deep review)
+// ---------------------------------------------------------------------------
 export interface ChecklistResult {
   // Contract
   contract_signed: string | null
@@ -66,6 +139,7 @@ export interface AnalysisResult {
   issues: string[]
   flags: string[]
   checklist: ChecklistResult
+  doc_classification?: ClassificationResult
 }
 
 const CHECKLIST_PROMPT = `You are an expert insurance compliance reviewer for a construction company. Analyze the submitted insurance documents against the following comprehensive review checklist. Extract every piece of information you can find.
@@ -143,6 +217,10 @@ export async function analyzeAccord25(
   const accord25 = text.slice(0, MAX_ACCORD_CHARS)
   const policy = policyText ? policyText.slice(0, MAX_POLICY_CHARS) : null
 
+  // Step 1: Classify with Haiku (fast)
+  const classification = await classifyDocument(text)
+
+  // Step 2: Deep analysis with Sonnet
   const req = scheduleRequirements
     ? `REQUIREMENTS (${scheduleRequirements.trade ?? 'Unknown'}): GL/occ $${scheduleRequirements.gl_per_occurrence ?? 0} GL/agg $${scheduleRequirements.gl_aggregate ?? 0} WC $${scheduleRequirements.workers_comp ?? 0} Auto $${scheduleRequirements.auto_liability ?? 0} Umbrella $${scheduleRequirements.umbrella ?? 0}${scheduleRequirements.notes ? ` Notes: ${scheduleRequirements.notes}` : ''}`
     : 'REQUIREMENTS: Apply general industry standards.'
@@ -152,6 +230,8 @@ export async function analyzeAccord25(
     : `ACCORD 25:\n${accord25}`
 
   const prompt = `${CHECKLIST_PROMPT}
+
+Document was classified as: ${classification.doc_type} (${classification.description})
 
 ${req}
 
@@ -210,8 +290,8 @@ Return ONLY valid JSON matching this exact structure (use null for fields you ca
 }`
 
   const message = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 2048,
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 4096,
     messages: [{ role: 'user', content: prompt }],
   })
 
@@ -228,6 +308,9 @@ Return ONLY valid JSON matching this exact structure (use null for fields you ca
   if (!parsed.checklist) {
     parsed.checklist = {}
   }
+
+  // Attach classification result
+  parsed.doc_classification = classification
 
   return parsed as AnalysisResult
 }

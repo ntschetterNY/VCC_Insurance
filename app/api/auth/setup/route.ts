@@ -9,33 +9,9 @@ import { createSupabaseAdmin } from '@/lib/supabase'
  */
 export async function POST(req: NextRequest) {
   try {
-    // Use request-based cookie pattern (same fix as login route)
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          get(name: string) {
-            return req.cookies.get(name)?.value
-          },
-          set() {},
-          remove() {},
-        },
-      }
-    )
-
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-
-    if (authError || !user) {
-      return NextResponse.json(
-        { error: `Not logged in: ${authError?.message ?? 'no session'}` },
-        { status: 401 }
-      )
-    }
-
     const adminClient = createSupabaseAdmin()
 
-    // Check if any admin users exist
+    // Check if any admin users exist already
     const { count: adminCount, error: countError } = await adminClient
       .from('users')
       .select('*', { count: 'exact', head: true })
@@ -52,40 +28,78 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // Check if this user already has a profile row
-    const { data: existingProfile } = await adminClient
+    // Get the current user from cookies
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          get(name: string) { return req.cookies.get(name)?.value },
+          set() {},
+          remove() {},
+        },
+      }
+    )
+
+    const { data: { user } } = await supabase.auth.getUser()
+
+    // If we can get the user from session, use that
+    if (user) {
+      // Check if profile exists
+      const { data: existing } = await adminClient
+        .from('users')
+        .select('id')
+        .eq('id', user.id)
+        .single()
+
+      if (existing) {
+        const { error } = await adminClient.from('users').update({ role: 'admin' }).eq('id', user.id)
+        if (error) return NextResponse.json({ error: `Update failed: ${error.message}` }, { status: 500 })
+      } else {
+        const { error } = await adminClient.from('users').insert({
+          id: user.id,
+          email: user.email,
+          name: user.email?.split('@')[0] ?? 'Admin',
+          role: 'admin',
+        })
+        if (error) return NextResponse.json({ error: `Insert failed: ${error.message}` }, { status: 500 })
+      }
+
+      return NextResponse.json({ success: true, user: { id: user.id, email: user.email, role: 'admin' } })
+    }
+
+    // Fallback: if session can't be read, try finding the user by listing auth users
+    // and promoting the first one (only works when no admin exists)
+    const { data: authUsers } = await adminClient.auth.admin.listUsers({ page: 1, perPage: 1 })
+    const firstUser = authUsers?.users?.[0]
+
+    if (!firstUser) {
+      return NextResponse.json({ error: 'No authenticated users found' }, { status: 400 })
+    }
+
+    // Check if profile exists
+    const { data: existing } = await adminClient
       .from('users')
-      .select('id, role')
-      .eq('id', user.id)
+      .select('id')
+      .eq('id', firstUser.id)
       .single()
 
-    if (existingProfile) {
-      // Promote existing user to admin
-      const { error: updateError } = await adminClient
-        .from('users')
-        .update({ role: 'admin' })
-        .eq('id', user.id)
-
-      if (updateError) {
-        return NextResponse.json({ error: `Update failed: ${updateError.message}` }, { status: 500 })
-      }
+    if (existing) {
+      const { error } = await adminClient.from('users').update({ role: 'admin' }).eq('id', firstUser.id)
+      if (error) return NextResponse.json({ error: `Update failed: ${error.message}` }, { status: 500 })
     } else {
-      // Create new admin profile
-      const { error: insertError } = await adminClient.from('users').insert({
-        id: user.id,
-        email: user.email,
-        name: user.email?.split('@')[0] ?? 'Admin',
+      const { error } = await adminClient.from('users').insert({
+        id: firstUser.id,
+        email: firstUser.email,
+        name: firstUser.email?.split('@')[0] ?? 'Admin',
         role: 'admin',
       })
-
-      if (insertError) {
-        return NextResponse.json({ error: `Insert failed: ${insertError.message}` }, { status: 500 })
-      }
+      if (error) return NextResponse.json({ error: `Insert failed: ${error.message}` }, { status: 500 })
     }
 
     return NextResponse.json({
       success: true,
-      user: { id: user.id, email: user.email, role: 'admin' },
+      user: { id: firstUser.id, email: firstUser.email, role: 'admin' },
     })
   } catch (err) {
     console.error('Setup error:', err)

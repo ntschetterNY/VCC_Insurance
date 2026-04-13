@@ -4,6 +4,14 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useState, useEffect } from 'react'
 
+const adminLinks = [
+  { href: '/admin/users', label: 'Users', icon: (
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+    </svg>
+  )},
+]
+
 const navLinks = [
   { href: '/', label: 'Dashboard', icon: (
     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -94,6 +102,35 @@ export default function NavBar() {
             )
           })}
         </ul>
+
+        {/* Admin section */}
+        {user?.role === 'admin' && (
+          <>
+            <div className="mt-4 mb-2 px-3">
+              <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">Admin</p>
+            </div>
+            <ul className="space-y-0.5">
+              {adminLinks.map((link) => {
+                const isActive = pathname === link.href || pathname.startsWith(link.href)
+                return (
+                  <li key={link.href}>
+                    <Link
+                      href={link.href}
+                      className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                        isActive
+                          ? 'bg-white/10 text-white'
+                          : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                      }`}
+                    >
+                      <span className="shrink-0">{link.icon}</span>
+                      {link.label}
+                    </Link>
+                  </li>
+                )
+              })}
+            </ul>
+          </>
+        )}
       </nav>
 
       {/* User info + logout */}
