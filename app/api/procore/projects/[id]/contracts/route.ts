@@ -15,8 +15,9 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
   const projectId = params.id
 
   try {
+    // Fetch commitments (subcontracts & purchase orders) for this project
     const res = await fetch(
-      `https://api.procore.com/rest/v1.0/commitments/contracts?project_id=${encodeURIComponent(projectId)}`,
+      `https://api.procore.com/rest/v1.0/projects/${encodeURIComponent(projectId)}/commitments`,
       {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -27,18 +28,20 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
 
     if (!res.ok) {
       const body = await res.text()
+      console.error(`Procore commitments API error for project ${projectId}: ${res.status} ${body}`)
       return NextResponse.json({ error: `Procore API error: ${res.status} ${body}` }, { status: res.status })
     }
 
-    const contracts = await res.json() as Array<{
+    const commitments = await res.json() as Array<{
       id: number
       title: string
       number?: string
-      vendor?: { name: string }
+      vendor?: { id: number; name: string }
       status?: string
+      commitment_type?: string
     }>
 
-    return NextResponse.json(contracts.map((c) => ({
+    return NextResponse.json(commitments.map((c) => ({
       id: c.id,
       title: c.title,
       number: c.number ?? '',
@@ -46,7 +49,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
       status: c.status ?? '',
     })))
   } catch (err) {
-    console.error('Procore contracts error:', err)
-    return NextResponse.json({ error: 'Failed to fetch Procore contracts' }, { status: 500 })
+    console.error('Procore commitments error:', err)
+    return NextResponse.json({ error: 'Failed to fetch Procore commitments' }, { status: 500 })
   }
 }

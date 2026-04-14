@@ -4,6 +4,12 @@ import { requireAuth } from '@/lib/auth'
 import { analyzeAccord25 } from '@/lib/ai'
 import { sanitizeString } from '@/lib/security'
 
+interface FileMeta {
+  doc_type: string
+  filename: string
+  extracted_text: string
+}
+
 export async function POST(request: NextRequest) {
   const user = await requireAuth()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -14,17 +20,29 @@ export async function POST(request: NextRequest) {
     const name = sanitizeString((formData.get('name') as string) ?? '')
     const trade = sanitizeString((formData.get('trade') as string) ?? '')
     const tier = formData.get('tier') as string
-    const accord25File = formData.get('accord25') as File | null
-    const policyFile = formData.get('policy') as File | null
     const procoreProjectId = (formData.get('procore_project_id') as string)?.trim() || null
     const procoreContractId = (formData.get('procore_contract_id') as string)?.trim() || null
 
-    // Pre-extracted text from the client (offloads PDF parsing)
-    const preExtractedAccord25 = (formData.get('accord25_text') as string) || ''
-    const preExtractedPolicy = (formData.get('policy_text') as string) || ''
+    // Support both new multi-file format and legacy two-file format
+    const fileMetaRaw = formData.get('file_metadata') as string | null
+    const multiFiles = formData.getAll('files') as File[]
 
-    if (!name || !accord25File) {
-      return NextResponse.json({ error: 'Name and Accord 25 file are required' }, { status: 400 })
+    // Legacy fields (backward compat)
+    const legacyAccord25 = formData.get('accord25') as File | null
+    const legacyPolicy = formData.get('policy') as File | null
+    const legacyAccord25Text = (formData.get('accord25_text') as string) || ''
+    const legacyPolicyText = (formData.get('policy_text') as string) || ''
+
+    const isMultiMode = fileMetaRaw && multiFiles.length > 0
+
+    if (!isMultiMode && !legacyAccord25) {
+      if (!name) {
+        return NextResponse.json({ error: 'Name and at least one document are required' }, { status: 400 })
+      }
+    }
+
+    if (!name) {
+      return NextResponse.json({ error: 'Subcontractor name is required' }, { status: 400 })
     }
 
     const supabase = await getDb()
@@ -63,42 +81,91 @@ export async function POST(request: NextRequest) {
     if (subErr || !submission) throw subErr ?? new Error('Failed to create submission')
     const submissionId = submission.id
 
-    // Upload Accord 25 to Supabase Storage
-    const accord25Buffer = Buffer.from(await accord25File.arrayBuffer())
-    const accord25StoragePath = `${submissionId}/accord25_${accord25File.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-    await supabase.storage.from('documents').upload(accord25StoragePath, accord25Buffer, {
-      contentType: 'application/pdf',
-    })
+    let accord25Text = ''
+    let policyText: string | null = null
 
-    await supabase.from('documents').insert({
-      submission_id: submissionId,
-      doc_type: 'accord25',
-      filename: accord25File.name,
-      storage_path: accord25StoragePath,
-      extracted_text: preExtractedAccord25 || null,
-      processed_at: preExtractedAccord25 ? new Date().toISOString() : null,
-    })
+    if (isMultiMode) {
+      // ---- New multi-file upload flow ----
+      const fileMeta: FileMeta[] = JSON.parse(fileMetaRaw)
 
-    // Upload policy if provided
-    if (policyFile && policyFile.size > 0) {
-      const policyBuffer = Buffer.from(await policyFile.arrayBuffer())
-      const policyStoragePath = `${submissionId}/policy_${policyFile.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-      await supabase.storage.from('documents').upload(policyStoragePath, policyBuffer, {
-        contentType: 'application/pdf',
-      })
+      for (let i = 0; i < multiFiles.length; i++) {
+        const file = multiFiles[i]
+        const meta = fileMeta[i]
+        if (!file || !meta) continue
 
-      await supabase.from('documents').insert({
-        submission_id: submissionId,
-        doc_type: 'policy',
-        filename: policyFile.name,
-        storage_path: policyStoragePath,
-        extracted_text: preExtractedPolicy || null,
-        processed_at: preExtractedPolicy ? new Date().toISOString() : null,
-      })
+        const buffer = Buffer.from(await file.arrayBuffer())
+        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+        const storagePath = `${submissionId}/${meta.doc_type}_${safeName}`
+
+        await supabase.storage.from('documents').upload(storagePath, buffer, {
+          contentType: 'application/pdf',
+        })
+
+        await supabase.from('documents').insert({
+          submission_id: submissionId,
+          doc_type: meta.doc_type,
+          filename: file.name,
+          storage_path: storagePath,
+          extracted_text: meta.extracted_text || null,
+          processed_at: meta.extracted_text ? new Date().toISOString() : null,
+        })
+
+        // Collect text for AI analysis
+        if (meta.doc_type === 'accord25' && meta.extracted_text) {
+          accord25Text = meta.extracted_text
+        } else if (
+          (meta.doc_type.startsWith('policy') || meta.doc_type === 'endorsement') &&
+          meta.extracted_text
+        ) {
+          // Concatenate all policy/endorsement text for analysis
+          policyText = (policyText || '') + '\n\n--- ' + meta.filename + ' ---\n' + meta.extracted_text
+        }
+      }
+    } else {
+      // ---- Legacy two-file upload flow (backward compat) ----
+      if (legacyAccord25) {
+        const accord25Buffer = Buffer.from(await legacyAccord25.arrayBuffer())
+        const accord25StoragePath = `${submissionId}/accord25_${legacyAccord25.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+        await supabase.storage.from('documents').upload(accord25StoragePath, accord25Buffer, {
+          contentType: 'application/pdf',
+        })
+
+        await supabase.from('documents').insert({
+          submission_id: submissionId,
+          doc_type: 'accord25',
+          filename: legacyAccord25.name,
+          storage_path: accord25StoragePath,
+          extracted_text: legacyAccord25Text || null,
+          processed_at: legacyAccord25Text ? new Date().toISOString() : null,
+        })
+
+        accord25Text = legacyAccord25Text
+      }
+
+      if (legacyPolicy && legacyPolicy.size > 0) {
+        const policyBuffer = Buffer.from(await legacyPolicy.arrayBuffer())
+        const policyStoragePath = `${submissionId}/policy_${legacyPolicy.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+        await supabase.storage.from('documents').upload(policyStoragePath, policyBuffer, {
+          contentType: 'application/pdf',
+        })
+
+        await supabase.from('documents').insert({
+          submission_id: submissionId,
+          doc_type: 'policy',
+          filename: legacyPolicy.name,
+          storage_path: policyStoragePath,
+          extracted_text: legacyPolicyText || null,
+          processed_at: legacyPolicyText ? new Date().toISOString() : null,
+        })
+
+        policyText = legacyPolicyText || null
+      }
     }
 
-    const accord25Text = preExtractedAccord25 || '[PDF text extraction pending]'
-    const policyText: string | null = preExtractedPolicy || null
+    // Fall back if no accord25 text was captured
+    if (!accord25Text) {
+      accord25Text = '[PDF text extraction pending]'
+    }
 
     // Find matching schedule requirements
     const { data: schedule } = await supabase
