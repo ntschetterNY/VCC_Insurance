@@ -3,77 +3,92 @@ import { createSupabaseAdmin } from '@/lib/supabase'
 
 /**
  * GET /api/auth/force-admin
- * One-time endpoint to force-promote n.tschetter@vorea.com to admin.
- * Uses service role key — no session required.
- * REMOVE THIS ENDPOINT after first admin is set up.
+ * Diagnoses and fixes admin setup for n.tschetter@vorea.com.
+ * Shows every step for debugging. REMOVE after setup is complete.
  */
 export async function GET() {
   const TARGET_EMAIL = 'n.tschetter@vorea.com'
+  const log: string[] = []
 
   try {
     const admin = createSupabaseAdmin()
+    log.push('1. Admin client created')
 
-    // Find the auth user by email
+    // Step 1: List ALL auth users
     const { data: authData, error: authError } = await admin.auth.admin.listUsers({ page: 1, perPage: 50 })
 
     if (authError) {
-      return NextResponse.json({ error: `Auth error: ${authError.message}` }, { status: 500 })
+      return NextResponse.json({ error: authError.message, log }, { status: 500 })
     }
+
+    const allEmails = authData?.users?.map(u => ({ id: u.id, email: u.email, confirmed: !!u.email_confirmed_at })) ?? []
+    log.push(`2. Found ${allEmails.length} auth users: ${JSON.stringify(allEmails)}`)
 
     const authUser = authData?.users?.find(u => u.email === TARGET_EMAIL)
 
     if (!authUser) {
       return NextResponse.json({
-        error: `User ${TARGET_EMAIL} not found in Supabase Auth`,
-        available_users: authData?.users?.map(u => u.email) ?? [],
+        error: `${TARGET_EMAIL} not found in Supabase Auth`,
+        auth_users: allEmails,
+        log,
       }, { status: 404 })
     }
 
-    // Check if profile row exists
-    const { data: existing } = await admin
+    log.push(`3. Found target user: id=${authUser.id}, email=${authUser.email}`)
+
+    // Step 2: Check what's in the users table
+    const { data: allProfiles, error: profilesError } = await admin
       .from('users')
-      .select('id, role')
+      .select('*')
+
+    log.push(`4. Users table: ${profilesError ? `ERROR: ${profilesError.message}` : `${allProfiles?.length ?? 0} rows`}`)
+    if (allProfiles) {
+      log.push(`   Profiles: ${JSON.stringify(allProfiles)}`)
+    }
+
+    // Step 3: Delete any existing row for this user (clean slate)
+    const { error: deleteError } = await admin
+      .from('users')
+      .delete()
       .eq('id', authUser.id)
-      .single()
 
-    if (existing) {
-      // Update to admin
-      const { error } = await admin
-        .from('users')
-        .update({ role: 'admin' })
-        .eq('id', authUser.id)
+    log.push(`5. Deleted existing row: ${deleteError ? `ERROR: ${deleteError.message}` : 'OK'}`)
 
-      if (error) {
-        return NextResponse.json({ error: `Update failed: ${error.message}` }, { status: 500 })
-      }
-
-      return NextResponse.json({
-        success: true,
-        action: 'promoted',
-        user: { id: authUser.id, email: TARGET_EMAIL, role: 'admin' },
-      })
-    } else {
-      // Insert new admin profile
-      const { error } = await admin.from('users').insert({
+    // Step 4: Insert fresh admin row
+    const { data: insertData, error: insertError } = await admin
+      .from('users')
+      .insert({
         id: authUser.id,
         email: TARGET_EMAIL,
         name: 'N. Tschetter',
         role: 'admin',
       })
+      .select()
+      .single()
 
-      if (error) {
-        return NextResponse.json({ error: `Insert failed: ${error.message}` }, { status: 500 })
-      }
-
-      return NextResponse.json({
-        success: true,
-        action: 'created',
-        user: { id: authUser.id, email: TARGET_EMAIL, role: 'admin' },
-      })
+    log.push(`6. Insert admin row: ${insertError ? `ERROR: ${insertError.message}` : 'OK'}`)
+    if (insertData) {
+      log.push(`   Inserted: ${JSON.stringify(insertData)}`)
     }
-  } catch (err) {
+
+    // Step 5: Verify the row exists and is admin
+    const { data: verify, error: verifyError } = await admin
+      .from('users')
+      .select('*')
+      .eq('id', authUser.id)
+      .single()
+
+    log.push(`7. Verify: ${verifyError ? `ERROR: ${verifyError.message}` : JSON.stringify(verify)}`)
+
     return NextResponse.json({
-      error: `Exception: ${err instanceof Error ? err.message : String(err)}`,
-    }, { status: 500 })
+      success: !insertError && !verifyError,
+      verified_role: verify?.role ?? 'UNKNOWN',
+      user_id: authUser.id,
+      email: TARGET_EMAIL,
+      log,
+    })
+  } catch (err) {
+    log.push(`EXCEPTION: ${err instanceof Error ? err.message : String(err)}`)
+    return NextResponse.json({ error: 'Failed', log }, { status: 500 })
   }
 }
