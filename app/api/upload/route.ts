@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
 import { classifyDocument, analyzeAccord25 } from '@/lib/ai'
 import { sanitizeString } from '@/lib/security'
+import { classifyTrade } from '@/lib/scheduleClassification'
 import pdfParse from 'pdf-parse'
 
 // ---------------------------------------------------------------------------
@@ -136,12 +137,26 @@ export async function POST(request: NextRequest) {
       accord25Text = '[PDF text extraction pending]'
     }
 
-    // Find matching schedule requirements
-    const { data: schedule } = await supabase
+    // Find matching schedule requirements — try exact match first, then fuzzy
+    let schedule = null
+    const { data: exactSchedule } = await supabase
       .from('schedule')
       .select('*')
       .eq('trade', trade)
       .single()
+    schedule = exactSchedule
+
+    if (!schedule && trade) {
+      const match = classifyTrade(trade)
+      if (match) {
+        const { data: fuzzySchedule } = await supabase
+          .from('schedule')
+          .select('*')
+          .eq('trade', match.matchedTrade)
+          .single()
+        schedule = fuzzySchedule
+      }
+    }
 
     // Run deep AI analysis (Sonnet)
     try {

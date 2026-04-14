@@ -42,6 +42,8 @@ interface SubmissionDetail {
   }[]
   schedule: {
     trade: string
+    schedule_type: string | null
+    deductible: number | null
     gl_per_occurrence: number
     gl_aggregate: number
     workers_comp: number
@@ -331,9 +333,23 @@ export default function ReviewPage() {
                   </div>
                 )}
 
-                {/* Limits Comparison */}
+                {/* Schedule & Limits Comparison */}
                 <div>
-                  <h3 className="text-sm font-semibold text-gray-700 mb-2">Coverage Limits</h3>
+                  <div className="flex items-center gap-3 mb-2">
+                    <h3 className="text-sm font-semibold text-gray-700">Coverage Limits</h3>
+                    {schedule?.schedule_type && (
+                      <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${
+                        schedule.schedule_type === 'A' ? 'bg-green-100 text-green-800' :
+                        schedule.schedule_type === 'B' ? 'bg-yellow-100 text-yellow-800' :
+                        'bg-red-100 text-red-800'
+                      }`}>
+                        Schedule {schedule.schedule_type}
+                      </span>
+                    )}
+                    {schedule?.deductible != null && schedule.deductible > 0 && (
+                      <span className="text-xs text-gray-500">Deductible: {formatCurrency(schedule.deductible)}</span>
+                    )}
+                  </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
