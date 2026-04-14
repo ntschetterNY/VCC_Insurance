@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
-import { classifyDocument, analyzeAccord25 } from '@/lib/ai'
+import { classifyDocument, analyzeAccord25, getAndClearUsageBuffer } from '@/lib/ai'
 import { sanitizeString } from '@/lib/security'
 import pdfParse from 'pdf-parse'
 
@@ -93,7 +93,7 @@ export async function POST(request: NextRequest) {
       let docType = 'other'
       if (text && text.trim().length >= 20) {
         try {
-          const classification = await classifyDocument(text)
+          const classification = await classifyDocument(text, submissionId)
           docType = classification.doc_type
           console.log(`[Upload] Classified "${file.name}" as ${docType} (${Math.round(classification.confidence * 100)}%)`)
         } catch (err) {
@@ -143,9 +143,21 @@ export async function POST(request: NextRequest) {
       .eq('trade', trade)
       .single()
 
+    // Fetch active review checks from memory
+    const { data: reviewCheckEntries } = await supabase
+      .from('memory')
+      .select('title, description')
+      .eq('category', 'Review Check')
+      .eq('active', true)
+
+    const reviewChecks = (reviewCheckEntries ?? []).map((e: { title: string; description: string }) => ({
+      title: e.title,
+      description: e.description || '',
+    }))
+
     // Run deep AI analysis (Sonnet)
     try {
-      const analysis = await analyzeAccord25(accord25Text, policyText, schedule || null)
+      const analysis = await analyzeAccord25(accord25Text, policyText, schedule || null, reviewChecks, submissionId)
       await supabase.from('ai_analysis').upsert({
         submission_id: submissionId,
         cg_numbers: analysis.cg_numbers,
@@ -154,6 +166,7 @@ export async function POST(request: NextRequest) {
         issues: analysis.issues,
         flags: analysis.flags,
         checklist: analysis.checklist || {},
+        custom_checks: (analysis as Record<string, unknown>).custom_checks || {},
         raw_response: analysis,
       }, { onConflict: 'submission_id' })
     } catch (aiError) {
@@ -161,6 +174,14 @@ export async function POST(request: NextRequest) {
       await supabase.from('ai_analysis').insert({
         submission_id: submissionId,
         issues: ['AI analysis failed — please re-run manually'],
+      })
+    }
+
+    // Flush usage log to DB
+    const usageEntries = getAndClearUsageBuffer()
+    if (usageEntries.length > 0) {
+      await supabase.from('ai_usage_log').insert(usageEntries).catch((err: unknown) => {
+        console.error('Failed to log AI usage:', err)
       })
     }
 

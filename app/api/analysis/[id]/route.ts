@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
-import { analyzeAccord25 } from '@/lib/ai'
+import { analyzeAccord25, getAndClearUsageBuffer } from '@/lib/ai'
 
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
   try {
@@ -50,7 +50,19 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
       .eq('trade', trade)
       .single()
 
-    const analysis = await analyzeAccord25(accord25Text, policyText, schedule || null)
+    // Fetch active review checks
+    const { data: reviewCheckEntries } = await supabase
+      .from('memory')
+      .select('title, description')
+      .eq('category', 'Review Check')
+      .eq('active', true)
+
+    const reviewChecks = (reviewCheckEntries ?? []).map((e: { title: string; description: string }) => ({
+      title: e.title,
+      description: e.description || '',
+    }))
+
+    const analysis = await analyzeAccord25(accord25Text, policyText, schedule || null, reviewChecks, submissionId)
 
     await supabase.from('ai_analysis').upsert({
       submission_id: submissionId,
@@ -60,8 +72,17 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
       issues: analysis.issues,
       flags: analysis.flags,
       checklist: analysis.checklist || {},
+      custom_checks: (analysis as Record<string, unknown>).custom_checks || {},
       raw_response: analysis,
     }, { onConflict: 'submission_id' })
+
+    // Flush usage log
+    const usageEntries = getAndClearUsageBuffer()
+    if (usageEntries.length > 0) {
+      await supabase.from('ai_usage_log').insert(usageEntries).catch((err: unknown) => {
+        console.error('Failed to log AI usage:', err)
+      })
+    }
 
     return NextResponse.json({ success: true, analysis })
   } catch (err) {

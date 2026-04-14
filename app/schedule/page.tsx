@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react'
 interface ScheduleEntry {
   id: number
   trade: string
+  schedule_group: string
   gl_per_occurrence: number
   gl_aggregate: number
   workers_comp: number
@@ -13,8 +14,18 @@ interface ScheduleEntry {
   notes: string
 }
 
+const SCHEDULE_GROUPS = ['A', 'B', 'C', 'D']
+
+const GROUP_COLORS: Record<string, string> = {
+  A: 'bg-blue-100 text-blue-800',
+  B: 'bg-purple-100 text-purple-800',
+  C: 'bg-amber-100 text-amber-800',
+  D: 'bg-gray-100 text-gray-700',
+}
+
 const blank = (): Omit<ScheduleEntry, 'id'> => ({
   trade: '',
+  schedule_group: 'A',
   gl_per_occurrence: 0,
   gl_aggregate: 0,
   workers_comp: 0,
@@ -51,6 +62,7 @@ export default function SchedulePage() {
     setEditId(entry.id)
     setForm({
       trade: entry.trade,
+      schedule_group: entry.schedule_group || 'A',
       gl_per_occurrence: entry.gl_per_occurrence,
       gl_aggregate: entry.gl_aggregate,
       workers_comp: entry.workers_comp,
@@ -129,16 +141,30 @@ export default function SchedulePage() {
             {editId !== null ? 'Edit Entry' : 'New Schedule Entry'}
           </h2>
           <form onSubmit={save} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Trade *</label>
-              <input
-                type="text"
-                value={form.trade}
-                onChange={(e) => setField('trade', e.target.value)}
-                placeholder="e.g. Electrical"
-                className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-full max-w-xs focus:outline-none focus:ring-2 focus:ring-slate-500"
-                required
-              />
+            <div className="grid grid-cols-2 gap-4 max-w-lg">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Trade *</label>
+                <input
+                  type="text"
+                  value={form.trade}
+                  onChange={(e) => setField('trade', e.target.value)}
+                  placeholder="e.g. Electrical"
+                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-slate-500"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Schedule Group</label>
+                <select
+                  value={form.schedule_group}
+                  onChange={(e) => setField('schedule_group', e.target.value)}
+                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-slate-500"
+                >
+                  {SCHEDULE_GROUPS.map((g) => (
+                    <option key={g} value={g}>Schedule {g}</option>
+                  ))}
+                </select>
+              </div>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               {[
@@ -202,6 +228,7 @@ export default function SchedulePage() {
             <thead>
               <tr className="border-b border-gray-200 bg-gray-50">
                 <th className="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Trade</th>
+                <th className="px-5 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Group</th>
                 <th className="px-5 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">GL / Occ</th>
                 <th className="px-5 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">GL Agg</th>
                 <th className="px-5 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Workers Comp</th>
@@ -215,6 +242,11 @@ export default function SchedulePage() {
               {entries.map((e) => (
                 <tr key={e.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-5 py-3 font-medium text-gray-900">{e.trade}</td>
+                  <td className="px-5 py-3 text-center">
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${GROUP_COLORS[e.schedule_group] ?? 'bg-gray-100 text-gray-700'}`}>
+                      {e.schedule_group || 'A'}
+                    </span>
+                  </td>
                   <td className="px-5 py-3 text-right text-gray-700">{formatCurrency(e.gl_per_occurrence)}</td>
                   <td className="px-5 py-3 text-right text-gray-700">{formatCurrency(e.gl_aggregate)}</td>
                   <td className="px-5 py-3 text-right text-gray-700">{formatCurrency(e.workers_comp)}</td>

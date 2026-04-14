@@ -9,6 +9,39 @@ const MAX_ACCORD_CHARS = 8000
 const MAX_POLICY_CHARS = 4000
 
 // ---------------------------------------------------------------------------
+// Usage logging — records token counts per model / function
+// ---------------------------------------------------------------------------
+export interface UsageEntry {
+  model: string
+  function_name: string
+  input_tokens: number
+  output_tokens: number
+  submission_id?: number | null
+}
+
+// Buffered in-memory; flushed to DB by callers via getAndClearUsageBuffer()
+const usageBuffer: UsageEntry[] = []
+
+function recordUsage(
+  model: string,
+  functionName: string,
+  message: Anthropic.Message,
+  submissionId?: number | null,
+) {
+  usageBuffer.push({
+    model,
+    function_name: functionName,
+    input_tokens: message.usage?.input_tokens ?? 0,
+    output_tokens: message.usage?.output_tokens ?? 0,
+    submission_id: submissionId ?? null,
+  })
+}
+
+export function getAndClearUsageBuffer(): UsageEntry[] {
+  return usageBuffer.splice(0, usageBuffer.length)
+}
+
+// ---------------------------------------------------------------------------
 // Document classification types
 // ---------------------------------------------------------------------------
 export type DocClassification =
@@ -31,7 +64,7 @@ export interface ClassificationResult {
 // ---------------------------------------------------------------------------
 // Step 1: Classify document type using Haiku (fast & cheap)
 // ---------------------------------------------------------------------------
-export async function classifyDocument(text: string): Promise<ClassificationResult> {
+export async function classifyDocument(text: string, submissionId?: number): Promise<ClassificationResult> {
   const sample = text.slice(0, 2000) // only need first ~2000 chars for classification
 
   const message = await client.messages.create({
@@ -63,6 +96,8 @@ Classification rules:
 - "other": Unknown or unrelated document`
     }],
   })
+
+  recordUsage('claude-haiku-4-5-20251001', 'classify', message, submissionId)
 
   const responseText = message.content[0].type === 'text' ? message.content[0].text : ''
   const jsonMatch = responseText.match(/\{[\s\S]*\}/)
@@ -212,24 +247,39 @@ export async function analyzeAccord25(
     auto_liability?: number
     umbrella?: number
     notes?: string
-  } | null
+  } | null,
+  reviewChecks?: { title: string; description: string }[],
+  submissionId?: number,
 ): Promise<AnalysisResult> {
   const accord25 = text.slice(0, MAX_ACCORD_CHARS)
   const policy = policyText ? policyText.slice(0, MAX_POLICY_CHARS) : null
 
   // Step 1: Classify with Haiku (fast)
-  const classification = await classifyDocument(text)
+  const classification = await classifyDocument(text, submissionId)
 
   // Step 2: Deep analysis with Sonnet
   const req = scheduleRequirements
     ? `REQUIREMENTS (${scheduleRequirements.trade ?? 'Unknown'}): GL/occ $${scheduleRequirements.gl_per_occurrence ?? 0} GL/agg $${scheduleRequirements.gl_aggregate ?? 0} WC $${scheduleRequirements.workers_comp ?? 0} Auto $${scheduleRequirements.auto_liability ?? 0} Umbrella $${scheduleRequirements.umbrella ?? 0}${scheduleRequirements.notes ? ` Notes: ${scheduleRequirements.notes}` : ''}`
     : 'REQUIREMENTS: Apply general industry standards.'
 
+  // Build custom review checks section
+  let customChecksPrompt = ''
+  if (reviewChecks && reviewChecks.length > 0) {
+    customChecksPrompt = `\n\n## CUSTOM REVIEW CHECKS\nIn addition to the standard checklist above, specifically check for and report on the following items. Include findings for each in the "custom_checks" field of your response:\n`
+    reviewChecks.forEach((check, i) => {
+      customChecksPrompt += `${i + 1}. **${check.title}**: ${check.description}\n`
+    })
+  }
+
   const docs = policy
     ? `ACCORD 25:\n${accord25}\n\nPOLICY (excerpt):\n${policy}`
     : `ACCORD 25:\n${accord25}`
 
-  const prompt = `${CHECKLIST_PROMPT}
+  const customChecksJson = reviewChecks && reviewChecks.length > 0
+    ? `,\n  "custom_checks": {\n${reviewChecks.map(c => `    "${c.title.replace(/"/g, '\\"')}": null`).join(',\n')}\n  }`
+    : ''
+
+  const prompt = `${CHECKLIST_PROMPT}${customChecksPrompt}
 
 Document was classified as: ${classification.doc_type} (${classification.description})
 
@@ -286,7 +336,7 @@ Return ONLY valid JSON matching this exact structure (use null for fields you ca
     "wc_term": null,
     "wc_full_policy": null,
     "wc_comments": null
-  }
+  }${customChecksJson}
 }`
 
   const message = await client.messages.create({
@@ -294,6 +344,8 @@ Return ONLY valid JSON matching this exact structure (use null for fields you ca
     max_tokens: 4096,
     messages: [{ role: 'user', content: prompt }],
   })
+
+  recordUsage('claude-sonnet-4-20250514', 'analyze', message, submissionId)
 
   const responseText = message.content[0].type === 'text' ? message.content[0].text : ''
 

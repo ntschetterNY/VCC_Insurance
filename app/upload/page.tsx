@@ -10,6 +10,18 @@ interface Subcontractor {
   tier: string
 }
 
+interface ScheduleEntry {
+  id: number
+  trade: string
+  schedule_group: string
+  gl_per_occurrence: number
+  gl_aggregate: number
+  workers_comp: number
+  auto_liability: number
+  umbrella: number
+  notes: string
+}
+
 interface ProcoreProject {
   id: number | string
   name: string
@@ -27,10 +39,66 @@ interface QueuedFile {
   file: File
 }
 
+// Find the best matching schedule entry for a given trade
+function guessSchedule(trade: string, schedules: ScheduleEntry[]): ScheduleEntry | null {
+  if (!trade.trim() || schedules.length === 0) return null
+  const lower = trade.toLowerCase().trim()
+
+  // Exact match first
+  const exact = schedules.find((s) => s.trade.toLowerCase() === lower)
+  if (exact) return exact
+
+  // Partial match (trade contains or is contained by schedule trade)
+  const partial = schedules.find(
+    (s) => s.trade.toLowerCase().includes(lower) || lower.includes(s.trade.toLowerCase()),
+  )
+  if (partial) return partial
+
+  // Keyword-based mapping for common construction trades
+  const TRADE_KEYWORDS: Record<string, string[]> = {
+    // Higher risk trades -> typically Schedule A (highest limits)
+    'General Contractor': ['general', 'gc', 'construction manager', 'cm'],
+    'Demolition': ['demo', 'demolition', 'abatement', 'asbestos'],
+    'Roofing': ['roof', 'roofing', 'waterproofing'],
+    'Structural Steel': ['steel', 'structural', 'iron', 'ironwork'],
+    'Excavation': ['excavat', 'grading', 'earthwork', 'foundation'],
+
+    // Medium risk trades -> typically Schedule B
+    'Electrical': ['electric', 'electrical', 'wiring', 'low voltage'],
+    'Plumbing': ['plumb', 'plumbing', 'piping', 'sprinkler', 'fire protection'],
+    'HVAC': ['hvac', 'mechanical', 'heating', 'cooling', 'ventilation'],
+    'Concrete': ['concrete', 'masonry', 'mason', 'brick', 'block'],
+    'Carpentry': ['carpent', 'framing', 'millwork', 'cabinet'],
+
+    // Lower risk trades -> typically Schedule C
+    'Painting': ['paint', 'painting', 'coating', 'finish'],
+    'Flooring': ['floor', 'flooring', 'tile', 'carpet'],
+    'Landscaping': ['landscape', 'landscaping', 'irrigation'],
+    'Cleaning': ['clean', 'cleaning', 'janitorial'],
+    'Security': ['security', 'alarm', 'surveillance', 'access control'],
+  }
+
+  for (const [tradeName, keywords] of Object.entries(TRADE_KEYWORDS)) {
+    if (keywords.some((kw) => lower.includes(kw))) {
+      const match = schedules.find((s) => s.trade.toLowerCase() === tradeName.toLowerCase())
+      if (match) return match
+    }
+  }
+
+  // Default: return first schedule entry with the most common group
+  const groupCounts: Record<string, number> = {}
+  for (const s of schedules) {
+    groupCounts[s.schedule_group] = (groupCounts[s.schedule_group] || 0) + 1
+  }
+  const defaultGroup = Object.entries(groupCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'A'
+  return schedules.find((s) => s.schedule_group === defaultGroup) ?? schedules[0]
+}
+
 export default function UploadPage() {
   const router = useRouter()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [subcontractors, setSubcontractors] = useState<Subcontractor[]>([])
+  const [schedules, setSchedules] = useState<ScheduleEntry[]>([])
   const [useExisting, setUseExisting] = useState(false)
   const [existingSubId, setExistingSubId] = useState('')
   const [name, setName] = useState('')
@@ -51,8 +119,14 @@ export default function UploadPage() {
   const [loadingContracts, setLoadingContracts] = useState(false)
   const [procoreError, setProcoreError] = useState('')
 
+  // Compute suggested schedule based on trade input
+  const suggestedSchedule = guessSchedule(trade, schedules)
+  const existingSub = subcontractors.find((s) => s.id === parseInt(existingSubId))
+  const existingSchedule = existingSub ? guessSchedule(existingSub.trade, schedules) : null
+
   useEffect(() => {
     fetch('/api/subcontractors').then((r) => r.json()).then(setSubcontractors).catch(() => {})
+    fetch('/api/schedule').then((r) => r.json()).then((d) => { if (Array.isArray(d)) setSchedules(d) }).catch(() => {})
     fetch('/api/procore').then((r) => r.json()).then((d) => {
       if (d.configured) {
         setProcoreConfigured(true)
@@ -225,19 +299,36 @@ export default function UploadPage() {
           </div>
 
           {useExisting ? (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Select Subcontractor</label>
-              <select
-                value={existingSubId}
-                onChange={(e) => setExistingSubId(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
-                required
-              >
-                <option value="">— Select —</option>
-                {subcontractors.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name} ({s.trade || 'No trade'})</option>
-                ))}
-              </select>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Select Subcontractor</label>
+                <select
+                  value={existingSubId}
+                  onChange={(e) => setExistingSubId(e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
+                  required
+                >
+                  <option value="">— Select —</option>
+                  {subcontractors.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name} ({s.trade || 'No trade'})</option>
+                  ))}
+                </select>
+              </div>
+              {existingSchedule && existingSub && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 flex items-center gap-3">
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
+                    existingSchedule.schedule_group === 'A' ? 'bg-blue-100 text-blue-800' :
+                    existingSchedule.schedule_group === 'B' ? 'bg-purple-100 text-purple-800' :
+                    existingSchedule.schedule_group === 'C' ? 'bg-amber-100 text-amber-800' :
+                    'bg-gray-100 text-gray-700'
+                  }`}>
+                    Schedule {existingSchedule.schedule_group}
+                  </span>
+                  <span className="text-sm text-blue-800">
+                    Matched to <strong>{existingSchedule.trade}</strong> requirements
+                  </span>
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-4">
@@ -261,7 +352,13 @@ export default function UploadPage() {
                     onChange={(e) => setTrade(e.target.value)}
                     placeholder="e.g. Electrical"
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
+                    list="trade-suggestions"
                   />
+                  <datalist id="trade-suggestions">
+                    {schedules.map((s) => (
+                      <option key={s.id} value={s.trade} />
+                    ))}
+                  </datalist>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Tier</label>
@@ -275,6 +372,39 @@ export default function UploadPage() {
                   </select>
                 </div>
               </div>
+
+              {/* Schedule auto-suggestion */}
+              {suggestedSchedule && trade.trim() && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3">
+                  <div className="flex items-center gap-3 mb-1.5">
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
+                      suggestedSchedule.schedule_group === 'A' ? 'bg-blue-100 text-blue-800' :
+                      suggestedSchedule.schedule_group === 'B' ? 'bg-purple-100 text-purple-800' :
+                      suggestedSchedule.schedule_group === 'C' ? 'bg-amber-100 text-amber-800' :
+                      'bg-gray-100 text-gray-700'
+                    }`}>
+                      Schedule {suggestedSchedule.schedule_group}
+                    </span>
+                    <span className="text-sm font-medium text-blue-800">
+                      Suggested: {suggestedSchedule.trade}
+                    </span>
+                  </div>
+                  <div className="text-xs text-blue-700 flex gap-4">
+                    <span>GL: ${(suggestedSchedule.gl_per_occurrence / 1000000).toFixed(1)}M / ${(suggestedSchedule.gl_aggregate / 1000000).toFixed(1)}M</span>
+                    <span>WC: ${(suggestedSchedule.workers_comp / 1000000).toFixed(1)}M</span>
+                    <span>Umbrella: ${(suggestedSchedule.umbrella / 1000000).toFixed(1)}M</span>
+                  </div>
+                  {suggestedSchedule.trade.toLowerCase() !== trade.toLowerCase().trim() && (
+                    <button
+                      type="button"
+                      onClick={() => setTrade(suggestedSchedule.trade)}
+                      className="mt-2 text-xs text-blue-600 hover:text-blue-800 font-medium"
+                    >
+                      Use "{suggestedSchedule.trade}" as trade name
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
