@@ -12,17 +12,21 @@ interface User {
 
 interface ProcoreSettings {
   client_id: string
+  client_secret: string
   company_id: string
-  access_token: string
   configured: boolean
+  token_cached: boolean
+  token_expiry: string | null
 }
 
 export default function SettingsPage() {
   const [currentUser, setCurrentUser] = useState<{ id: string; name: string; role: string } | null>(null)
   const [users, setUsers] = useState<User[]>([])
-  const [procore, setProcore] = useState<ProcoreSettings>({ client_id: '', company_id: '', access_token: '', configured: false })
+  const [procore, setProcore] = useState<ProcoreSettings>({ client_id: '', client_secret: '', company_id: '', configured: false, token_cached: false, token_expiry: null })
   const [procoreLoading, setProcoreLoading] = useState(false)
   const [procoreSaved, setProcoreSaved] = useState(false)
+  const [procoreTesting, setProcoreTesting] = useState(false)
+  const [procoreTestResult, setProcoreTestResult] = useState('')
 
   // Setup state
   const [setupRequired, setSetupRequired] = useState(false)
@@ -90,14 +94,32 @@ export default function SettingsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           client_id: procore.client_id,
+          client_secret: procore.client_secret,
           company_id: procore.company_id,
-          access_token: procore.access_token,
         }),
       })
       setProcoreSaved(true)
       setTimeout(() => setProcoreSaved(false), 3000)
     } finally {
       setProcoreLoading(false)
+    }
+  }
+
+  async function testProcoreConnection() {
+    setProcoreTesting(true)
+    setProcoreTestResult('')
+    try {
+      const res = await fetch('/api/procore', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) {
+        setProcoreTestResult(`Error: ${data.error}`)
+      } else {
+        setProcoreTestResult(`Connected to: ${data.company_name}`)
+      }
+    } catch {
+      setProcoreTestResult('Connection test failed')
+    } finally {
+      setProcoreTesting(false)
     }
   }
 
@@ -404,7 +426,7 @@ export default function SettingsPage() {
               Only admins can edit Procore credentials.
             </p>
           )}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Client ID</label>
               <input
@@ -417,28 +439,33 @@ export default function SettingsPage() {
               />
             </div>
             <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Client Secret</label>
+              <input
+                type="password"
+                value={procore.client_secret}
+                onChange={(e) => setProcore({ ...procore, client_secret: e.target.value })}
+                disabled={!isAdmin}
+                placeholder="Procore OAuth Client Secret"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 disabled:bg-gray-50 disabled:text-gray-400"
+              />
+            </div>
+            <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Company ID</label>
               <input
                 type="text"
                 value={procore.company_id}
                 onChange={(e) => setProcore({ ...procore, company_id: e.target.value })}
                 disabled={!isAdmin}
-                placeholder="Your Procore Company ID"
+                placeholder="e.g. 9539"
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 disabled:bg-gray-50 disabled:text-gray-400"
               />
             </div>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Access Token</label>
-            <input
-              type="password"
-              value={procore.access_token}
-              onChange={(e) => setProcore({ ...procore, access_token: e.target.value })}
-              disabled={!isAdmin}
-              placeholder="Procore API Access Token"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 disabled:bg-gray-50 disabled:text-gray-400"
-            />
-          </div>
+          {procore.token_cached && (
+            <p className="text-xs text-green-600">
+              Access token cached{procore.token_expiry ? ` (expires ${new Date(procore.token_expiry).toLocaleString()})` : ''}. Tokens auto-refresh.
+            </p>
+          )}
           {isAdmin && (
             <div className="flex items-center gap-3">
               <button
@@ -446,11 +473,27 @@ export default function SettingsPage() {
                 disabled={procoreLoading}
                 className="bg-slate-900 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-slate-700 disabled:opacity-50"
               >
-                {procoreLoading ? 'Saving…' : 'Save Procore Settings'}
+                {procoreLoading ? 'Saving…' : 'Save Settings'}
+              </button>
+              <button
+                type="button"
+                onClick={testProcoreConnection}
+                disabled={procoreTesting || !procore.configured}
+                className="border border-gray-300 text-gray-700 px-5 py-2 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+              >
+                {procoreTesting ? 'Testing…' : 'Test Connection'}
               </button>
               {procoreSaved && <span className="text-sm text-green-600">Saved!</span>}
+              {procoreTestResult && (
+                <span className={`text-sm ${procoreTestResult.startsWith('Error') ? 'text-red-600' : 'text-green-600'}`}>
+                  {procoreTestResult}
+                </span>
+              )}
             </div>
           )}
+          <p className="text-xs text-gray-400 mt-2">
+            Access tokens are auto-fetched using OAuth Client Credentials and cached until expiry.
+          </p>
         </form>
       </div>
     </div>

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
-import { decryptField } from '@/lib/security'
+import { getValidAccessToken } from '@/app/api/procore/route'
 
 /**
  * POST /api/procore/export
@@ -23,26 +23,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'submission_id and project_id are required' }, { status: 400 })
     }
 
+    // Get auto-refreshed access token
+    const tokenResult = await getValidAccessToken()
+    if ('error' in tokenResult) {
+      return NextResponse.json({ error: tokenResult.error }, { status: 400 })
+    }
+
+    const { token: accessToken, companyId } = tokenResult
     const supabase = await getDb()
-
-    // Get Procore settings
-    const { data: settingsRows } = await supabase
-      .from('settings')
-      .select('key, value')
-      .like('key', 'procore_%')
-
-    const settings: Record<string, string> = {}
-    ;(settingsRows ?? []).forEach((r: { key: string; value: string }) => { settings[r.key] = r.value })
-
-    let accessToken = settings['procore_access_token'] ?? ''
-    if (accessToken) {
-      try { accessToken = decryptField(accessToken) } catch { /* use raw */ }
-    }
-    const companyId = settings['procore_company_id'] ?? ''
-
-    if (!accessToken || !companyId) {
-      return NextResponse.json({ error: 'Procore not configured' }, { status: 400 })
-    }
 
     // Get all documents for the submission
     const { data: documents } = await supabase
@@ -82,13 +70,12 @@ export async function POST(req: NextRequest) {
         continue
       }
 
-      // Upload to Procore as an attachment
-      const formData = new FormData()
       const blob = new Blob([await fileData.arrayBuffer()], { type: 'application/pdf' })
       const filename = `${subName}_${doc.doc_type}_${doc.filename}`
 
-      // If contract_id is provided, attach to the commitment (subcontract)
       if (contract_id) {
+        // Attach to commitment (subcontract)
+        const formData = new FormData()
         formData.append('file', blob, filename)
         formData.append('attachment[name]', filename)
 
@@ -115,13 +102,9 @@ export async function POST(req: NextRequest) {
           exportResults.push({ filename, success: false, error: `Network error: ${err instanceof Error ? err.message : String(err)}` })
         }
       } else {
-        // Attach to the project's documents/files section
-        formData.append('file[data]', blob, filename)
-        formData.append('file[name]', filename)
-        formData.append('file[description]', `Insurance document for ${subName} - ${doc.doc_type}`)
-
+        // Attach to project documents
         try {
-          // First get or create the "Insurance" folder
+          // Get or create "Insurance" folder
           const foldersRes = await fetch(
             `https://api.procore.com/rest/v1.0/folders?project_id=${encodeURIComponent(project_id)}`,
             {
@@ -138,7 +121,6 @@ export async function POST(req: NextRequest) {
             const insuranceFolder = folders.find(f => f.name === 'Insurance')
             folderId = insuranceFolder ? String(insuranceFolder.id) : null
 
-            // Create Insurance folder if it doesn't exist
             if (!folderId) {
               const createFolderRes = await fetch(
                 `https://api.procore.com/rest/v1.0/folders?project_id=${encodeURIComponent(project_id)}`,
@@ -159,7 +141,6 @@ export async function POST(req: NextRequest) {
             }
           }
 
-          // Upload file to project documents
           const uploadFormData = new FormData()
           uploadFormData.append('file[data]', blob, filename)
           uploadFormData.append('file[name]', filename)
