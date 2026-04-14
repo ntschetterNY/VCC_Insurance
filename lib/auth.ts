@@ -5,8 +5,6 @@
 
 import { createSupabaseServerClient, createSupabaseAdmin } from './supabase'
 
-export const SESSION_COOKIE = 'sb-access-token' // Supabase manages its own cookies
-
 export interface SessionUser {
   id: string
   email: string
@@ -15,7 +13,8 @@ export interface SessionUser {
 }
 
 // ---------------------------------------------------------------------------
-// Get the currently authenticated user from Supabase session cookies
+// Get the currently authenticated user from Supabase session cookies.
+// Uses admin client for profile lookup to bypass RLS.
 // ---------------------------------------------------------------------------
 export async function getCurrentUser(): Promise<SessionUser | null> {
   try {
@@ -23,8 +22,9 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
     const { data: { user }, error } = await supabase.auth.getUser()
     if (error || !user) return null
 
-    // Fetch profile from our users table
-    const { data: profile } = await supabase
+    // Use admin client to read profile (bypasses RLS)
+    const adminClient = createSupabaseAdmin()
+    const { data: profile } = await adminClient
       .from('users')
       .select('name, role')
       .eq('id', user.id)
@@ -73,7 +73,7 @@ export async function createUser(
   const { data, error } = await admin.auth.admin.createUser({
     email,
     password,
-    email_confirm: true, // auto-confirm since admin is creating
+    email_confirm: true,
   })
   if (error) return { error: error.message }
 
@@ -83,7 +83,6 @@ export async function createUser(
     .insert({ id: data.user.id, email, name, role })
 
   if (profileError) {
-    // Rollback: delete auth user if profile insert fails
     await admin.auth.admin.deleteUser(data.user.id)
     return { error: profileError.message }
   }

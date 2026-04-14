@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createServerClient, type CookieOptions } from '@supabase/ssr'
+import { createServerClient } from '@supabase/ssr'
+import { createSupabaseAdmin } from '@/lib/supabase'
 
 export async function GET(req: NextRequest) {
   try {
@@ -22,8 +23,9 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // Fetch profile from users table
-    const { data: profile } = await supabase
+    // Use admin client to bypass RLS for profile lookup
+    const adminClient = createSupabaseAdmin()
+    const { data: profile } = await adminClient
       .from('users')
       .select('name, role')
       .eq('id', user.id)

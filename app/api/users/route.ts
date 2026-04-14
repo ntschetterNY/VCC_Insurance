@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getDb } from '@/lib/db'
+import { createSupabaseAdmin } from '@/lib/supabase'
 import { requireAdmin, createUser } from '@/lib/auth'
 import { sanitizeString, isValidEmail } from '@/lib/security'
 
@@ -7,8 +7,9 @@ export async function GET() {
   const user = await requireAdmin()
   if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-  const supabase = await getDb()
-  const { data, error } = await supabase
+  // Use admin client to bypass RLS
+  const adminClient = createSupabaseAdmin()
+  const { data, error } = await adminClient
     .from('users')
     .select('id, email, name, role, created_at')
     .order('created_at', { ascending: false })
