@@ -6,47 +6,81 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
   const user = await requireAuth()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  let projectId: string
+  try {
+    projectId = params.id
+    console.log(`[Procore] commitments request for project: ${projectId}`)
+  } catch (e) {
+    console.error('[Procore] Failed to read params:', e)
+    return NextResponse.json({ error: 'Invalid project ID' }, { status: 400 })
+  }
+
   const tokenResult = await getValidAccessToken()
   if ('error' in tokenResult) {
+    console.error('[Procore] Token error:', tokenResult.error)
     return NextResponse.json({ error: tokenResult.error }, { status: 400 })
   }
 
   const { token, companyId } = tokenResult
-  const projectId = params.id
+
+  // OAS: Procore-Company-Id header must be an integer
+  const companyIdInt = parseInt(companyId, 10)
+  if (isNaN(companyIdInt)) {
+    console.error(`[Procore] Invalid companyId (not an integer): "${companyId}"`)
+    return NextResponse.json({ error: 'Invalid Procore Company ID' }, { status: 400 })
+  }
+
+  console.log(`[Procore] companyId=${companyIdInt} projectId="${projectId}" token length=${token.length}`)
+
+  // REST v2.0 commitment_contracts (per Procore OAS spec)
+  // Use view=extended to include vendor.name in response
+  const url =
+    `https://api.procore.com/rest/v2.0/companies/${companyIdInt}` +
+    `/projects/${projectId}` +
+    `/commitment_contracts?page=1&per_page=100&view=extended`
+
+  console.log(`[Procore] Fetching: ${url}`)
 
   try {
-    const res = await fetch(
-      `https://api.procore.com/rest/v1.0/commitments/contracts?project_id=${encodeURIComponent(projectId)}`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Procore-Company-Id': companyId,
-        },
-      }
-    )
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Procore-Company-Id': String(companyIdInt),
+        Accept: 'application/json',
+      },
+    })
+
+    console.log(`[Procore] Response status: ${res.status} ${res.statusText}`)
+
+    const bodyText = await res.text()
+    console.log(`[Procore] Response body (first 800 chars): ${bodyText.slice(0, 800)}`)
 
     if (!res.ok) {
-      const body = await res.text()
-      return NextResponse.json({ error: `Procore API error: ${res.status} ${body}` }, { status: res.status })
+      return NextResponse.json(
+        { error: `Procore ${res.status}: ${bodyText.slice(0, 300)}` },
+        { status: res.status }
+      )
     }
 
-    const contracts = await res.json() as Array<{
-      id: number
-      title: string
-      number?: string
-      vendor?: { name: string }
-      status?: string
-    }>
+    const raw = JSON.parse(bodyText)
 
-    return NextResponse.json(contracts.map((c) => ({
+    // v2.0 wraps results in { data: [...] }
+    const items = Array.isArray(raw) ? raw : (raw?.data ?? [])
+    console.log(`[Procore] Parsed ${items.length} commitment(s)`)
+
+    // OAS: IDs are strings in v2.0 responses
+    return NextResponse.json(items.map((c: Record<string, unknown>) => ({
       id: c.id,
-      title: c.title,
-      number: c.number ?? '',
-      vendor: c.vendor?.name ?? '',
-      status: c.status ?? '',
+      title: (c.title as string) ?? (c.description as string) ?? `Commitment #${c.id}`,
+      number: (c.number as string) ?? '',
+      vendor: (c.vendor as { name?: string })?.name ?? '',
+      status: (c.status as string) ?? '',
     })))
   } catch (err) {
-    console.error('Procore contracts error:', err)
-    return NextResponse.json({ error: 'Failed to fetch Procore contracts' }, { status: 500 })
+    console.error('[Procore] commitments fetch/parse error:', err)
+    return NextResponse.json(
+      { error: `Commitments request failed: ${err instanceof Error ? err.message : String(err)}` },
+      { status: 500 }
+    )
   }
 }

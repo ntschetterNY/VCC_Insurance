@@ -1,8 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
-import { analyzeAccord25 } from '@/lib/ai'
+import { classifyDocument, analyzeAccord25 } from '@/lib/ai'
 import { sanitizeString } from '@/lib/security'
+import pdfParse from 'pdf-parse'
+
+// ---------------------------------------------------------------------------
+// Extract text from a PDF buffer server-side
+// ---------------------------------------------------------------------------
+async function extractTextFromBuffer(buffer: Buffer, maxChars = 8000): Promise<string> {
+  try {
+    const data = await pdfParse(buffer)
+    return data.text.slice(0, maxChars)
+  } catch (err) {
+    console.error('PDF text extraction failed:', err)
+    return ''
+  }
+}
 
 export async function POST(request: NextRequest) {
   const user = await requireAuth()
@@ -14,17 +28,16 @@ export async function POST(request: NextRequest) {
     const name = sanitizeString((formData.get('name') as string) ?? '')
     const trade = sanitizeString((formData.get('trade') as string) ?? '')
     const tier = formData.get('tier') as string
-    const accord25File = formData.get('accord25') as File | null
-    const policyFile = formData.get('policy') as File | null
     const procoreProjectId = (formData.get('procore_project_id') as string)?.trim() || null
     const procoreContractId = (formData.get('procore_contract_id') as string)?.trim() || null
 
-    // Pre-extracted text from the client (offloads PDF parsing)
-    const preExtractedAccord25 = (formData.get('accord25_text') as string) || ''
-    const preExtractedPolicy = (formData.get('policy_text') as string) || ''
+    const uploadedFiles = formData.getAll('files') as File[]
 
-    if (!name || !accord25File) {
-      return NextResponse.json({ error: 'Name and Accord 25 file are required' }, { status: 400 })
+    if (!name) {
+      return NextResponse.json({ error: 'Subcontractor name is required' }, { status: 400 })
+    }
+    if (uploadedFiles.length === 0) {
+      return NextResponse.json({ error: 'At least one PDF document is required' }, { status: 400 })
     }
 
     const supabase = await getDb()
@@ -63,42 +76,65 @@ export async function POST(request: NextRequest) {
     if (subErr || !submission) throw subErr ?? new Error('Failed to create submission')
     const submissionId = submission.id
 
-    // Upload Accord 25 to Supabase Storage
-    const accord25Buffer = Buffer.from(await accord25File.arrayBuffer())
-    const accord25StoragePath = `${submissionId}/accord25_${accord25File.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-    await supabase.storage.from('documents').upload(accord25StoragePath, accord25Buffer, {
-      contentType: 'application/pdf',
-    })
+    // ------------------------------------------------------------------
+    // Process each uploaded file: extract text → classify with Haiku →
+    // store in Supabase Storage + documents table
+    // ------------------------------------------------------------------
+    let accord25Text = ''
+    let policyText: string | null = null
 
-    await supabase.from('documents').insert({
-      submission_id: submissionId,
-      doc_type: 'accord25',
-      filename: accord25File.name,
-      storage_path: accord25StoragePath,
-      extracted_text: preExtractedAccord25 || null,
-      processed_at: preExtractedAccord25 ? new Date().toISOString() : null,
-    })
+    for (const file of uploadedFiles) {
+      const buffer = Buffer.from(await file.arrayBuffer())
 
-    // Upload policy if provided
-    if (policyFile && policyFile.size > 0) {
-      const policyBuffer = Buffer.from(await policyFile.arrayBuffer())
-      const policyStoragePath = `${submissionId}/policy_${policyFile.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`
-      await supabase.storage.from('documents').upload(policyStoragePath, policyBuffer, {
+      // 1. Extract text server-side
+      const text = await extractTextFromBuffer(buffer)
+
+      // 2. Classify with Haiku
+      let docType = 'other'
+      if (text && text.trim().length >= 20) {
+        try {
+          const classification = await classifyDocument(text)
+          docType = classification.doc_type
+          console.log(`[Upload] Classified "${file.name}" as ${docType} (${Math.round(classification.confidence * 100)}%)`)
+        } catch (err) {
+          console.error(`[Upload] Classification failed for "${file.name}":`, err)
+        }
+      } else {
+        console.warn(`[Upload] Insufficient text from "${file.name}" — marked as "other"`)
+      }
+
+      // 3. Upload to Supabase Storage
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+      const storagePath = `${submissionId}/${docType}_${safeName}`
+
+      await supabase.storage.from('documents').upload(storagePath, buffer, {
         contentType: 'application/pdf',
       })
 
+      // 4. Insert document record
       await supabase.from('documents').insert({
         submission_id: submissionId,
-        doc_type: 'policy',
-        filename: policyFile.name,
-        storage_path: policyStoragePath,
-        extracted_text: preExtractedPolicy || null,
-        processed_at: preExtractedPolicy ? new Date().toISOString() : null,
+        doc_type: docType,
+        filename: file.name,
+        storage_path: storagePath,
+        extracted_text: text || null,
+        processed_at: new Date().toISOString(),
       })
+
+      // 5. Collect text for the deep analysis step
+      if (docType === 'accord25' && text) {
+        accord25Text = text
+      } else if (
+        (docType.startsWith('policy') || docType === 'endorsement') && text
+      ) {
+        policyText = (policyText || '') + '\n\n--- ' + file.name + ' ---\n' + text
+      }
     }
 
-    const accord25Text = preExtractedAccord25 || '[PDF text extraction pending]'
-    const policyText: string | null = preExtractedPolicy || null
+    // Fall back if no ACORD 25 text was identified
+    if (!accord25Text) {
+      accord25Text = '[PDF text extraction pending]'
+    }
 
     // Find matching schedule requirements
     const { data: schedule } = await supabase
@@ -107,7 +143,7 @@ export async function POST(request: NextRequest) {
       .eq('trade', trade)
       .single()
 
-    // Run AI analysis
+    // Run deep AI analysis (Sonnet)
     try {
       const analysis = await analyzeAccord25(accord25Text, policyText, schedule || null)
       await supabase.from('ai_analysis').upsert({

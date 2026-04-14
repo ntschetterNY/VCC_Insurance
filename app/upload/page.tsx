@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 
 interface Subcontractor {
@@ -11,61 +11,35 @@ interface Subcontractor {
 }
 
 interface ProcoreProject {
-  id: number
+  id: number | string
   name: string
 }
 
 interface ProcoreContract {
-  id: number
+  id: number | string
   title: string
   number: string
   vendor: string
 }
 
-// Extract text from a PDF file entirely in the browser (offloads processing from server)
-async function extractPdfTextClientSide(file: File, maxChars = 5000): Promise<string> {
-  try {
-    const pdfjsLib = await import('pdfjs-dist')
-    // Use unpkg CDN for the worker — no server-side processing needed
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-      `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`
-
-    const arrayBuffer = await file.arrayBuffer()
-    const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) })
-    const pdf = await loadingTask.promise
-
-    let fullText = ''
-    const pagesToProcess = Math.min(pdf.numPages, 8)
-    for (let i = 1; i <= pagesToProcess; i++) {
-      const page = await pdf.getPage(i)
-      const textContent = await page.getTextContent()
-      const pageText = textContent.items
-        .filter((item) => 'str' in item)
-        .map((item) => (item as { str: string }).str)
-        .join(' ')
-      fullText += pageText + '\n'
-      if (fullText.length >= maxChars) break
-    }
-    return fullText.slice(0, maxChars)
-  } catch (err) {
-    console.warn('Client-side PDF extraction failed, server will extract:', err)
-    return ''
-  }
+interface QueuedFile {
+  id: string
+  file: File
 }
 
 export default function UploadPage() {
   const router = useRouter()
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [subcontractors, setSubcontractors] = useState<Subcontractor[]>([])
   const [useExisting, setUseExisting] = useState(false)
   const [existingSubId, setExistingSubId] = useState('')
   const [name, setName] = useState('')
   const [trade, setTrade] = useState('')
   const [tier, setTier] = useState('primary')
-  const [accord25, setAccord25] = useState<File | null>(null)
-  const [policy, setPolicy] = useState<File | null>(null)
+  const [files, setFiles] = useState<QueuedFile[]>([])
   const [submitting, setSubmitting] = useState(false)
-  const [extractingText, setExtractingText] = useState(false)
   const [error, setError] = useState('')
+  const [dragOver, setDragOver] = useState(false)
 
   // Procore
   const [procoreConfigured, setProcoreConfigured] = useState(false)
@@ -75,6 +49,7 @@ export default function UploadPage() {
   const [procoreContractId, setProcoreContractId] = useState('')
   const [loadingProjects, setLoadingProjects] = useState(false)
   const [loadingContracts, setLoadingContracts] = useState(false)
+  const [procoreError, setProcoreError] = useState('')
 
   useEffect(() => {
     fetch('/api/subcontractors').then((r) => r.json()).then(setSubcontractors).catch(() => {})
@@ -95,26 +70,90 @@ export default function UploadPage() {
     if (!procoreProjectId) {
       setProcoreContracts([])
       setProcoreContractId('')
+      setProcoreError('')
       return
     }
     setLoadingContracts(true)
     setProcoreContractId('')
+    setProcoreError('')
     fetch(`/api/procore/projects/${procoreProjectId}/contracts`)
-      .then((r) => r.json())
-      .then((data) => { if (Array.isArray(data)) setProcoreContracts(data) })
-      .catch(() => {})
+      .then(async (r) => {
+        const data = await r.json()
+        if (!r.ok) {
+          setProcoreError(data.error || `Failed to load commitments (${r.status})`)
+          setProcoreContracts([])
+          return
+        }
+        if (Array.isArray(data)) {
+          setProcoreContracts(data)
+          if (data.length === 0) {
+            setProcoreError('No commitments found for this project')
+          }
+        } else {
+          console.error('Unexpected commitments response:', data)
+          setProcoreError('Unexpected response format from Procore')
+          setProcoreContracts([])
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to fetch commitments:', err)
+        setProcoreError('Network error loading commitments')
+      })
       .finally(() => setLoadingContracts(false))
   }, [procoreProjectId])
 
+  // -------------------------------------------------------------------------
+  // Add files (from drop or picker)
+  // -------------------------------------------------------------------------
+  const addFiles = useCallback((newFiles: FileList | File[]) => {
+    const pdfFiles = Array.from(newFiles).filter(
+      (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+    )
+    if (pdfFiles.length === 0) {
+      setError('Please upload PDF files only.')
+      return
+    }
+    setError('')
+    const entries: QueuedFile[] = pdfFiles.map((file) => ({
+      id: `${file.name}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      file,
+    }))
+    setFiles((prev) => [...prev, ...entries])
+  }, [])
+
+  // Drag & drop handlers
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation(); setDragOver(true)
+  }, [])
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation(); setDragOver(false)
+  }, [])
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation(); setDragOver(false)
+    if (e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files)
+  }, [addFiles])
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      addFiles(e.target.files)
+      e.target.value = ''
+    }
+  }, [addFiles])
+
+  const removeFile = useCallback((id: string) => {
+    setFiles((prev) => prev.filter((f) => f.id !== id))
+  }, [])
+
+  // -------------------------------------------------------------------------
+  // Submit — sends raw PDFs; backend does extraction + classification
+  // -------------------------------------------------------------------------
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
 
-    if (!accord25) {
-      setError('Accord 25 form is required.')
+    if (files.length === 0) {
+      setError('Please upload at least one document.')
       return
     }
-
     if (!useExisting && !name.trim()) {
       setError('Subcontractor name is required.')
       return
@@ -122,15 +161,8 @@ export default function UploadPage() {
 
     setSubmitting(true)
     try {
-      // Extract text client-side to offload processing from the server
-      setExtractingText(true)
-      const [accord25Text, policyText] = await Promise.all([
-        extractPdfTextClientSide(accord25, 5000),
-        policy ? extractPdfTextClientSide(policy, 2500) : Promise.resolve(''),
-      ])
-      setExtractingText(false)
-
       const fd = new FormData()
+
       if (useExisting && existingSubId) {
         fd.append('existing_sub_id', existingSubId)
         const sub = subcontractors.find((s) => s.id === parseInt(existingSubId))
@@ -144,16 +176,14 @@ export default function UploadPage() {
         fd.append('trade', trade)
         fd.append('tier', tier)
       }
-      fd.append('accord25', accord25)
-      if (policy) fd.append('policy', policy)
 
-      // Send pre-extracted text so server doesn't need to parse PDFs
-      if (accord25Text) fd.append('accord25_text', accord25Text)
-      if (policyText) fd.append('policy_text', policyText)
-
-      // Procore linkage
       if (procoreProjectId) fd.append('procore_project_id', procoreProjectId)
       if (procoreContractId) fd.append('procore_contract_id', procoreContractId)
+
+      // Append every PDF — backend will extract text & classify each one
+      for (const f of files) {
+        fd.append('files', f.file)
+      }
 
       const res = await fetch('/api/upload', { method: 'POST', body: fd })
       if (!res.ok) {
@@ -164,23 +194,18 @@ export default function UploadPage() {
       router.push(`/review/${data.submissionId}`)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Upload failed')
-      setExtractingText(false)
     } finally {
       setSubmitting(false)
     }
   }
 
-  const submitLabel = extractingText
-    ? 'Extracting PDF text…'
-    : submitting
-    ? 'Uploading & Analyzing…'
-    : 'Submit for Review'
-
   return (
     <div className="p-8 max-w-2xl">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-gray-900">Upload Documents</h1>
-        <p className="text-gray-500 mt-1">Submit Accord 25 and policy documents for AI-powered compliance review</p>
+        <p className="text-gray-500 mt-1">
+          Drop all insurance documents — AI identifies each type on the backend
+        </p>
       </div>
 
       <form onSubmit={handleSubmit} className="bg-white rounded-xl border border-gray-200 p-6 space-y-6">
@@ -273,14 +298,14 @@ export default function UploadPage() {
                   disabled={loadingProjects}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 disabled:bg-gray-50"
                 >
-                  <option value="">{loadingProjects ? 'Loading…' : '— No project —'}</option>
+                  <option value="">{loadingProjects ? 'Loading...' : '— No project —'}</option>
                   {procoreProjects.map((p) => (
                     <option key={p.id} value={p.id}>{p.name}</option>
                   ))}
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Contract / Commitment</label>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Commitment</label>
                 <select
                   value={procoreContractId}
                   onChange={(e) => setProcoreContractId(e.target.value)}
@@ -288,7 +313,7 @@ export default function UploadPage() {
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 disabled:bg-gray-50"
                 >
                   <option value="">
-                    {!procoreProjectId ? '— Select project first —' : loadingContracts ? 'Loading…' : '— No contract —'}
+                    {!procoreProjectId ? '— Select project first —' : loadingContracts ? 'Loading...' : '— No commitment —'}
                   </option>
                   {procoreContracts.map((c) => (
                     <option key={c.id} value={c.id}>
@@ -298,42 +323,78 @@ export default function UploadPage() {
                 </select>
               </div>
             </div>
+            {procoreError && (
+              <p className="text-xs text-amber-600 mt-1">{procoreError}</p>
+            )}
           </div>
         )}
 
         {procoreConfigured && <hr className="border-gray-200" />}
 
-        {/* File Uploads */}
-        <div className="space-y-4">
-          <div className="flex items-center gap-2 mb-1">
-            <p className="text-sm font-medium text-gray-700">Documents</p>
-            <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded">PDF text extracted in your browser</span>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Accord 25 Certificate of Insurance *
-            </label>
-            <input
-              type="file"
-              accept=".pdf"
-              onChange={(e) => setAccord25(e.target.files?.[0] ?? null)}
-              className="w-full text-sm text-gray-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200 cursor-pointer"
-              required
-            />
-          </div>
+        {/* Single drag & drop zone */}
+        <div>
+          <p className="text-sm font-medium text-gray-700 mb-3">Documents</p>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Full Policy Document <span className="text-gray-400 font-normal">(optional)</span>
-            </label>
+          <div
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            className={`relative border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors ${
+              dragOver
+                ? 'border-slate-500 bg-slate-50'
+                : 'border-gray-300 hover:border-gray-400 bg-gray-50/50'
+            }`}
+          >
             <input
+              ref={fileInputRef}
               type="file"
               accept=".pdf"
-              onChange={(e) => setPolicy(e.target.files?.[0] ?? null)}
-              className="w-full text-sm text-gray-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200 cursor-pointer"
+              multiple
+              onChange={handleFileSelect}
+              className="hidden"
             />
+
+            <div className="flex flex-col items-center gap-2">
+              <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+              </svg>
+              <p className="text-sm font-medium text-gray-600">
+                Drop PDF files here, or click to browse
+              </p>
+              <p className="text-xs text-gray-400">
+                ACORD 25, Policies, Endorsements — drop them all
+              </p>
+            </div>
           </div>
         </div>
+
+        {/* File list */}
+        {files.length > 0 && (
+          <div className="space-y-1.5">
+            {files.map((f) => (
+              <div
+                key={f.id}
+                className="flex items-center gap-3 bg-gray-50 rounded-lg border border-gray-200 px-4 py-2.5"
+              >
+                <svg className="w-4 h-4 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
+                </svg>
+                <span className="text-sm text-gray-700 truncate flex-1">{f.file.name}</span>
+                <span className="text-xs text-gray-400">{(f.file.size / 1024).toFixed(0)} KB</span>
+                <button
+                  type="button"
+                  onClick={() => removeFile(f.id)}
+                  className="text-gray-400 hover:text-red-500 transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
 
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700">
@@ -344,10 +405,10 @@ export default function UploadPage() {
         <div className="flex items-center gap-3 pt-2">
           <button
             type="submit"
-            disabled={submitting || extractingText}
+            disabled={submitting || files.length === 0}
             className="bg-[#0f172a] text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-slate-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            {submitLabel}
+            {submitting ? 'Uploading & Analyzing...' : 'Submit for Review'}
           </button>
           <button
             type="button"
@@ -356,6 +417,9 @@ export default function UploadPage() {
           >
             Cancel
           </button>
+          {submitting && (
+            <span className="text-xs text-gray-400">AI is extracting text, classifying, and analyzing your documents...</span>
+          )}
         </div>
       </form>
     </div>
