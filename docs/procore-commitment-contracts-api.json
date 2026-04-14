@@ -1,0 +1,102 @@
+{
+  "endpoint": "/rest/v2.0/companies/{company_id}/projects/{project_id}/commitment_contracts",
+  "method": "GET",
+  "summary": "List Commitment Contracts",
+  "description": "Returns a list of Commitment Contracts for a given project.",
+  "required_headers": {
+    "Procore-Company-Id": {
+      "type": "integer",
+      "description": "Unique company identifier associated with the Procore User Account."
+    }
+  },
+  "path_parameters": {
+    "company_id": { "type": "string", "required": true },
+    "project_id": { "type": "string", "required": true }
+  },
+  "query_parameters": {
+    "page": { "type": "integer", "required": false },
+    "per_page": { "type": "integer", "required": false, "default": 10, "min": 1, "max": 100 },
+    "view": { "type": "string", "enum": ["default", "extended"], "required": false, "note": "extended view includes vendor name and custom fields" },
+    "filters[type]": { "type": "string", "enum": ["WorkOrderContract", "PurchaseOrderContract"] },
+    "filters[status]": { "type": "string|array", "note": "WorkOrder: Draft,Out For Bid,Out For Signature,Approved,Complete,Terminated,Void. PurchaseOrder: Draft,Processing,Submitted,Partially Received,Received,Approved,Closed." },
+    "filters[id]": { "type": "integer|array" },
+    "filters[vendor_id]": { "type": "integer|array" },
+    "filters[executed]": { "type": "boolean" },
+    "filters[signature_required]": { "type": "boolean" },
+    "filters[accounting_method]": { "type": "string", "enum": ["unit", "amount"] },
+    "filters[created_at]": { "type": "string|array", "format": "date-time or range" },
+    "filters[updated_at]": { "type": "string|array", "format": "date-time or range" },
+    "filters[deleted_at]": { "type": "string|array", "format": "date-time or range" },
+    "filters[include_deleted]": { "type": "string", "enum": ["only", "with"] }
+  },
+  "response_200": {
+    "headers": {
+      "Per-Page": "integer - items per page",
+      "Total": "integer - total items",
+      "Link": "string - pagination links (first, prev, next, last)"
+    },
+    "body": {
+      "data": [
+        {
+          "_note": "default view fields",
+          "id": "string (e.g. '123')",
+          "type": "WorkOrderContract | PurchaseOrderContract",
+          "number": "string (e.g. 'ABC-456')",
+          "status": "string (e.g. 'Approved')",
+          "executed": "boolean",
+          "title": "string",
+          "description": "string (HTML)",
+          "created_at": "date-time",
+          "updated_at": "date-time",
+          "grand_total": "string (decimal)",
+          "private": "boolean",
+          "currency_configuration": {
+            "base_currency_iso_code": "string|null",
+            "currency_iso_code": "string|null",
+            "currency_exchange_rate": "string|null"
+          },
+          "created_by": { "id": "string", "name": "string" },
+          "accounting_method": "amount | unit",
+          "allow_comments": "boolean",
+          "allow_markups": "boolean",
+          "change_order_level_of_detail": "change_order_package | change_order_request | potential_change_order | line_item",
+          "enable_ssov": "boolean",
+          "allow_change_orders_ssov": "boolean",
+          "allow_payment_applications": "boolean",
+          "allow_payments": "boolean",
+          "retainage_percent": "number",
+          "display_materials_retainage": "boolean",
+          "display_work_retainage": "boolean",
+          "show_cost_code_on_pdf": "boolean",
+          "ssr_enabled": "boolean",
+          "show_line_items_to_non_admins": "boolean",
+          "vendor": {
+            "_note": "default view has id only; extended view has id + name",
+            "id": "string",
+            "name": "string (extended view only)"
+          }
+        }
+      ]
+    }
+  },
+  "response_errors": {
+    "400": "Bad Request",
+    "401": "Unauthorized",
+    "403": "Forbidden",
+    "404": "Not Found"
+  },
+  "error_format": {
+    "error": {
+      "code": "string (e.g. BAD_REQUEST)",
+      "message": "string",
+      "details": [{ "reason_code": "string", "message": "string", "source": "string" }]
+    }
+  },
+  "important_notes": [
+    "Procore-Company-Id header must be an INTEGER, not a string",
+    "Response is wrapped in { data: [...] }",
+    "Default view returns vendor.id only — use view=extended to get vendor.name",
+    "IDs in response are STRINGS not integers (e.g. '123' not 123)",
+    "per_page defaults to 10, max is 100"
+  ]
+}

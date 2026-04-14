@@ -22,14 +22,22 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
   }
 
   const { token, companyId } = tokenResult
-  console.log(`[Procore] companyId="${companyId}" projectId="${projectId}" token length=${token.length}`)
 
-  // REST v2.0 commitment_contracts — matches working Power Query:
-  //   /rest/v2.0/companies/{CompanyId}/projects/{ProjectId}/commitment_contracts
+  // OAS: Procore-Company-Id header must be an integer
+  const companyIdInt = parseInt(companyId, 10)
+  if (isNaN(companyIdInt)) {
+    console.error(`[Procore] Invalid companyId (not an integer): "${companyId}"`)
+    return NextResponse.json({ error: 'Invalid Procore Company ID' }, { status: 400 })
+  }
+
+  console.log(`[Procore] companyId=${companyIdInt} projectId="${projectId}" token length=${token.length}`)
+
+  // REST v2.0 commitment_contracts (per Procore OAS spec)
+  // Use view=extended to include vendor.name in response
   const url =
-    `https://api.procore.com/rest/v2.0/companies/${companyId}` +
+    `https://api.procore.com/rest/v2.0/companies/${companyIdInt}` +
     `/projects/${projectId}` +
-    `/commitment_contracts?page=1&per_page=100`
+    `/commitment_contracts?page=1&per_page=100&view=extended`
 
   console.log(`[Procore] Fetching: ${url}`)
 
@@ -37,7 +45,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
     const res = await fetch(url, {
       headers: {
         Authorization: `Bearer ${token}`,
-        'Procore-Company-Id': companyId,
+        'Procore-Company-Id': String(companyIdInt),
         Accept: 'application/json',
       },
     })
@@ -60,6 +68,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
     const items = Array.isArray(raw) ? raw : (raw?.data ?? [])
     console.log(`[Procore] Parsed ${items.length} commitment(s)`)
 
+    // OAS: IDs are strings in v2.0 responses
     return NextResponse.json(items.map((c: Record<string, unknown>) => ({
       id: c.id,
       title: (c.title as string) ?? (c.description as string) ?? `Commitment #${c.id}`,

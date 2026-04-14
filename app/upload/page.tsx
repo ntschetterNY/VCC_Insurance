@@ -11,12 +11,12 @@ interface Subcontractor {
 }
 
 interface ProcoreProject {
-  id: number
+  id: number | string
   name: string
 }
 
 interface ProcoreContract {
-  id: number
+  id: number | string
   title: string
   number: string
   vendor: string
