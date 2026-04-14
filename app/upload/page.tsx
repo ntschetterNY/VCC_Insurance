@@ -136,6 +136,7 @@ export default function UploadPage() {
   const [procoreContractId, setProcoreContractId] = useState('')
   const [loadingProjects, setLoadingProjects] = useState(false)
   const [loadingContracts, setLoadingContracts] = useState(false)
+  const [procoreError, setProcoreError] = useState('')
 
   useEffect(() => {
     fetch('/api/subcontractors').then((r) => r.json()).then(setSubcontractors).catch(() => {})
@@ -156,14 +157,35 @@ export default function UploadPage() {
     if (!procoreProjectId) {
       setProcoreContracts([])
       setProcoreContractId('')
+      setProcoreError('')
       return
     }
     setLoadingContracts(true)
     setProcoreContractId('')
+    setProcoreError('')
     fetch(`/api/procore/projects/${procoreProjectId}/contracts`)
-      .then((r) => r.json())
-      .then((data) => { if (Array.isArray(data)) setProcoreContracts(data) })
-      .catch(() => {})
+      .then(async (r) => {
+        const data = await r.json()
+        if (!r.ok) {
+          setProcoreError(data.error || `Failed to load commitments (${r.status})`)
+          setProcoreContracts([])
+          return
+        }
+        if (Array.isArray(data)) {
+          setProcoreContracts(data)
+          if (data.length === 0) {
+            setProcoreError('No commitments found for this project')
+          }
+        } else {
+          console.error('Unexpected commitments response:', data)
+          setProcoreError('Unexpected response format from Procore')
+          setProcoreContracts([])
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to fetch commitments:', err)
+        setProcoreError('Network error loading commitments')
+      })
       .finally(() => setLoadingContracts(false))
   }, [procoreProjectId])
 
@@ -506,6 +528,9 @@ export default function UploadPage() {
                 </select>
               </div>
             </div>
+            {procoreError && (
+              <p className="text-xs text-amber-600 mt-1">{procoreError}</p>
+            )}
           </div>
         )}
 
