@@ -6,6 +6,9 @@ import { sanitizeString } from '@/lib/security'
 import { classifyTrade } from '@/lib/scheduleClassification'
 import pdfParse from 'pdf-parse'
 
+// Allow up to 60s for PDF extraction + AI classification + analysis
+export const maxDuration = 60
+
 // ---------------------------------------------------------------------------
 // Extract text from a PDF buffer server-side
 // ---------------------------------------------------------------------------
@@ -100,6 +103,17 @@ export async function POST(request: NextRequest) {
     // Process each uploaded file: extract text → classify with Haiku →
     // store in Supabase Storage + documents table
     // ------------------------------------------------------------------
+
+    // Fetch classification hints from memory to improve AI accuracy
+    const { data: classificationMemory } = await supabase
+      .from('memory')
+      .select('description')
+      .eq('category', 'Classification Rule')
+      .eq('active', true)
+    const classificationHints = (classificationMemory ?? [])
+      .map((m: { description: string }) => m.description)
+      .filter(Boolean)
+
     let accord25Text = ''
     let policyText: string | null = null
 
@@ -117,7 +131,7 @@ export async function POST(request: NextRequest) {
         console.log(`[Upload] Using manual type for "${file.name}": ${docType}`)
       } else if (text && text.trim().length >= 20) {
         try {
-          const classification = await classifyDocument(text, submissionId)
+          const classification = await classifyDocument(text, submissionId, classificationHints)
           docType = classification.doc_type
           console.log(`[Upload] Classified "${file.name}" as ${docType} (${Math.round(classification.confidence * 100)}%)`)
         } catch (err) {

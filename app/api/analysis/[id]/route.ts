@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { analyzeAccord25, getAndClearUsageBuffer } from '@/lib/ai'
 
+// Allow up to 60s for deep AI analysis (Sonnet)
+export const maxDuration = 60
+
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
   try {
     const supabase = await getDb()
@@ -37,11 +40,28 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
       .select('*')
       .eq('submission_id', submissionId)
 
-    const accord25Doc = documents?.find((d: Record<string, unknown>) => d.doc_type === 'accord25')
-    const policyDoc = documents?.find((d: Record<string, unknown>) => d.doc_type === 'policy')
+    // Gather all accord25 text and all policy/endorsement texts
+    let accord25Text = ''
+    let policyText: string | null = null
 
-    const accord25Text = (accord25Doc?.extracted_text as string) || ''
-    const policyText: string | null = (policyDoc?.extracted_text as string) || null
+    for (const doc of documents ?? []) {
+      const docType = doc.doc_type as string
+      const text = doc.extracted_text as string | null
+      if (!text) continue
+
+      if (docType === 'accord25') {
+        accord25Text = text
+      } else if (
+        docType.startsWith('policy') || docType === 'endorsement'
+      ) {
+        const filename = (doc.filename as string) || docType
+        policyText = (policyText || '') + '\n\n--- ' + filename + ' ---\n' + text
+      }
+    }
+
+    if (!accord25Text) {
+      accord25Text = '[PDF text extraction pending]'
+    }
 
     const trade = (submission.subcontractors as Record<string, unknown>)?.trade as string
     const { data: schedule } = await supabase
@@ -88,6 +108,11 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
     return NextResponse.json({ success: true, analysis })
   } catch (err) {
     console.error(err)
-    return NextResponse.json({ error: 'Analysis failed' }, { status: 500 })
+    const message = err instanceof Error ? err.message : 'Analysis failed'
+    const isKeyMissing = message.includes('ANTHROPIC_API_KEY')
+    return NextResponse.json(
+      { error: isKeyMissing ? 'ANTHROPIC_API_KEY is not configured. Add it to .env.local.' : 'Analysis failed' },
+      { status: 500 },
+    )
   }
 }
