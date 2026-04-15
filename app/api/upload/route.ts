@@ -35,6 +35,17 @@ export async function POST(request: NextRequest) {
 
     const uploadedFiles = formData.getAll('files') as File[]
 
+    // Parse optional manual document type assignments (filename → doc_type)
+    let manualDocTypes: Record<string, string> = {}
+    const docTypesJson = formData.get('doc_types') as string | null
+    if (docTypesJson) {
+      try {
+        manualDocTypes = JSON.parse(docTypesJson)
+      } catch {
+        console.warn('[Upload] Failed to parse doc_types JSON')
+      }
+    }
+
     if (!name) {
       return NextResponse.json({ error: 'Subcontractor name is required' }, { status: 400 })
     }
@@ -98,9 +109,13 @@ export async function POST(request: NextRequest) {
       // 1. Extract text server-side
       const text = await extractTextFromBuffer(buffer)
 
-      // 2. Classify with Haiku
+      // 2. Classify — use manual type if provided, otherwise AI classify with Haiku
       let docType = 'other'
-      if (text && text.trim().length >= 20) {
+      const manualType = manualDocTypes[file.name]
+      if (manualType) {
+        docType = manualType
+        console.log(`[Upload] Using manual type for "${file.name}": ${docType}`)
+      } else if (text && text.trim().length >= 20) {
         try {
           const classification = await classifyDocument(text, submissionId)
           docType = classification.doc_type

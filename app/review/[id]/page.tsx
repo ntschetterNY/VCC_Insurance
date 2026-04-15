@@ -79,6 +79,38 @@ const severityColors: Record<string, string> = {
   high: 'bg-red-100 text-red-800',
 }
 
+// COI document categories the user must provide
+const COI_CATEGORIES: { value: string; label: string; color: string }[] = [
+  { value: 'accord25', label: 'Accord 25', color: 'bg-blue-100 text-blue-800' },
+  { value: 'policy_gl', label: 'GL Policy', color: 'bg-emerald-100 text-emerald-800' },
+  { value: 'policy_excess', label: 'UM Policy', color: 'bg-purple-100 text-purple-800' },
+  { value: 'policy_wc', label: 'WC Policy', color: 'bg-amber-100 text-amber-800' },
+  { value: 'policy_auto', label: 'Auto Policy', color: 'bg-cyan-100 text-cyan-800' },
+  { value: 'endorsement', label: 'Endorsements', color: 'bg-rose-100 text-rose-800' },
+]
+
+const ALL_DOC_TYPES: { value: string; label: string }[] = [
+  { value: 'accord25', label: 'Accord 25' },
+  { value: 'policy_gl', label: 'GL Policy' },
+  { value: 'policy_excess', label: 'UM Policy' },
+  { value: 'policy_wc', label: 'WC Policy' },
+  { value: 'policy_auto', label: 'Auto Policy' },
+  { value: 'endorsement', label: 'Endorsements' },
+  { value: 'accord28', label: 'Accord 28' },
+  { value: 'contract', label: 'Contract' },
+  { value: 'other', label: 'Other' },
+]
+
+function docTypeLabel(docType: string): string {
+  const match = ALL_DOC_TYPES.find((t) => t.value === docType)
+  return match?.label ?? docType
+}
+
+function docTypeBadgeColor(docType: string): string {
+  const cat = COI_CATEGORIES.find((c) => c.value === docType)
+  return cat?.color ?? 'bg-gray-100 text-gray-700'
+}
+
 export default function ReviewPage() {
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
@@ -188,6 +220,19 @@ export default function ReviewPage() {
       await loadData()
     } finally {
       setFlagSubmitting(false)
+    }
+  }
+
+  async function updateDocType(docId: number, newType: string) {
+    try {
+      await fetch(`/api/documents/${docId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc_type: newType }),
+      })
+      await loadData()
+    } catch {
+      // ignore
     }
   }
 
@@ -524,6 +569,31 @@ export default function ReviewPage() {
                         </div>
                       </div>
 
+                      {/* Commercial Auto */}
+                      <div className="border border-gray-200 rounded-lg overflow-hidden">
+                        <div className="bg-slate-50 px-4 py-2 border-b border-gray-200">
+                          <h4 className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Commercial Auto</h4>
+                        </div>
+                        <div className="divide-y divide-gray-100">
+                          {([
+                            ['auto_carrier', 'Carrier'],
+                            ['auto_limits', 'Limits'],
+                            ['auto_term', 'Term'],
+                            ['auto_full_policy', 'Full Policy'],
+                            ['auto_comments', 'Comments'],
+                          ] as const).map(([key, label]) => {
+                            const val = analysis.checklist?.[key]
+                            if (!val) return null
+                            return (
+                              <div key={key} className="flex justify-between px-4 py-2 text-sm gap-4">
+                                <span className="text-gray-600 shrink-0">{label}</span>
+                                <span className="font-medium text-right text-gray-800">{val}</span>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+
                       {/* Workers Compensation */}
                       <div className="border border-gray-200 rounded-lg overflow-hidden">
                         <div className="bg-slate-50 px-4 py-2 border-b border-gray-200">
@@ -645,17 +715,54 @@ export default function ReviewPage() {
 
         {/* Sidebar */}
         <div className="space-y-5">
-          {/* Documents */}
+          {/* Documents — COI Categories */}
           <div className="bg-white rounded-xl border border-gray-200 p-5">
             <h3 className="text-sm font-semibold text-gray-900 mb-3">Documents</h3>
+
+            {/* Required COI category checklist */}
+            <div className="mb-4 space-y-1">
+              {COI_CATEGORIES.map((cat) => {
+                const docs = data.documents.filter((d) => d.doc_type === cat.value)
+                const present = docs.length > 0
+                return (
+                  <div key={cat.value} className="flex items-center gap-2 text-xs">
+                    <span className={`w-4 h-4 flex items-center justify-center rounded-full ${present ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>
+                      {present ? '\u2713' : '\u2717'}
+                    </span>
+                    <span className={`font-medium ${present ? 'text-gray-700' : 'text-red-600'}`}>
+                      {cat.label}
+                    </span>
+                    {present && (
+                      <span className="text-gray-400">({docs.length})</span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+            <hr className="border-gray-100 mb-3" />
+
             {data.documents.length === 0 ? (
               <p className="text-sm text-gray-400">No documents uploaded</p>
             ) : (
               <ul className="space-y-3">
                 {data.documents.map((doc) => (
-                  <li key={doc.id}>
-                    <p className="font-medium text-gray-800 text-sm truncate" title={doc.filename}>{doc.filename}</p>
-                    <p className="text-xs text-gray-400 capitalize mb-1">{doc.doc_type === 'accord25' ? 'Accord 25' : 'Full Policy'}</p>
+                  <li key={doc.id} className="border border-gray-100 rounded-lg p-3">
+                    <p className="font-medium text-gray-800 text-sm truncate mb-1.5" title={doc.filename}>{doc.filename}</p>
+                    <div className="flex items-center gap-2 mb-2">
+                      <select
+                        value={doc.doc_type}
+                        onChange={(e) => updateDocType(doc.id, e.target.value)}
+                        className="border border-gray-200 rounded px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-slate-400 bg-white"
+                      >
+                        {ALL_DOC_TYPES.map((t) => (
+                          <option key={t.value} value={t.value}>{t.label}</option>
+                        ))}
+                      </select>
+                      <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${docTypeBadgeColor(doc.doc_type)}`}>
+                        {docTypeLabel(doc.doc_type)}
+                      </span>
+                    </div>
                     <a
                       href={`/api/documents/${doc.id}/download`}
                       download
