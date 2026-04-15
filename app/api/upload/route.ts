@@ -29,6 +29,7 @@ export async function POST(request: NextRequest) {
     const name = sanitizeString((formData.get('name') as string) ?? '')
     const trade = sanitizeString((formData.get('trade') as string) ?? '')
     const tier = formData.get('tier') as string
+    const scheduleType = (formData.get('schedule_type') as string)?.trim() || null
     const procoreProjectId = (formData.get('procore_project_id') as string)?.trim() || null
     const procoreContractId = (formData.get('procore_contract_id') as string)?.trim() || null
 
@@ -53,10 +54,17 @@ export async function POST(request: NextRequest) {
     let subId: number
     if (existingSub) {
       subId = existingSub.id
+      // Update schedule_type if provided
+      if (scheduleType) {
+        await supabase
+          .from('subcontractors')
+          .update({ schedule_type: scheduleType })
+          .eq('id', subId)
+      }
     } else {
       const { data: newSub, error: subError } = await supabase
         .from('subcontractors')
-        .insert({ name, trade, tier })
+        .insert({ name, trade, tier, schedule_type: scheduleType })
         .select('id')
         .single()
       if (subError || !newSub) throw subError ?? new Error('Failed to create subcontractor')

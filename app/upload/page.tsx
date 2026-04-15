@@ -219,11 +219,16 @@ export default function UploadPage() {
           fd.append('name', sub.name)
           fd.append('trade', sub.trade || '')
           fd.append('tier', sub.tier || 'primary')
+          // Derive schedule from existing sub's trade
+          const match = classifyTrade(sub.trade)
+          if (match) fd.append('schedule_type', match.schedule.type)
         }
       } else {
         fd.append('name', name)
         fd.append('trade', trade)
         fd.append('tier', tier)
+        // Include the suggested schedule assignment
+        if (scheduleMatch) fd.append('schedule_type', scheduleMatch.schedule.type)
       }
 
       if (procoreProjectId) fd.append('procore_project_id', procoreProjectId)
