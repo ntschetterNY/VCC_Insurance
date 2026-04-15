@@ -50,6 +50,16 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       return NextResponse.json({ error: 'At least one PDF file is required' }, { status: 400 })
     }
 
+    // Fetch classification hints from memory to improve AI accuracy
+    const { data: classificationMemory } = await supabase
+      .from('memory')
+      .select('description')
+      .eq('category', 'Classification Rule')
+      .eq('active', true)
+    const classificationHints = (classificationMemory ?? [])
+      .map((m: { description: string }) => m.description)
+      .filter(Boolean)
+
     const addedDocs: { id: number; filename: string; doc_type: string }[] = []
 
     for (const file of uploadedFiles) {
@@ -63,7 +73,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
         docType = manualType
       } else if (text && text.trim().length >= 20) {
         try {
-          const classification = await classifyDocument(text, submissionId)
+          const classification = await classifyDocument(text, submissionId, classificationHints)
           docType = classification.doc_type
         } catch (err) {
           console.error(`[Documents] Classification failed for "${file.name}":`, err)

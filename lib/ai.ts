@@ -64,8 +64,17 @@ export interface ClassificationResult {
 // ---------------------------------------------------------------------------
 // Step 1: Classify document type using Haiku (fast & cheap)
 // ---------------------------------------------------------------------------
-export async function classifyDocument(text: string, submissionId?: number): Promise<ClassificationResult> {
+export async function classifyDocument(
+  text: string,
+  submissionId?: number,
+  classificationHints?: string[],
+): Promise<ClassificationResult> {
   const sample = text.slice(0, 2000) // only need first ~2000 chars for classification
+
+  let hintsBlock = ''
+  if (classificationHints && classificationHints.length > 0) {
+    hintsBlock = `\n\nPrevious classification corrections (use these to improve accuracy):\n${classificationHints.map((h) => `- ${h}`).join('\n')}`
+  }
 
   const message = await client.messages.create({
     model: 'claude-haiku-4-5-20251001',
@@ -93,7 +102,7 @@ Classification rules:
 - "policy_auto": Commercial Auto policy or declarations page
 - "endorsement": Policy endorsement (CG 20 10, CG 20 37, waiver of subrogation, etc.)
 - "contract": Subcontract or agreement document
-- "other": Unknown or unrelated document`
+- "other": Unknown or unrelated document${hintsBlock}`
     }],
   })
 

@@ -134,6 +134,8 @@ export default function ReviewPage() {
   const [uploadDragOver, setUploadDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
+  const [queuedFiles, setQueuedFiles] = useState<{ id: string; file: File; docType: string }[]>([])
+  const [deletingDocId, setDeletingDocId] = useState<number | null>(null)
 
   const loadData = useCallback(async () => {
     try {
@@ -259,8 +261,8 @@ export default function ReviewPage() {
   }
 
   // --- Document upload handlers ---
-  const handleUploadFiles = useCallback(async (files: FileList | File[]) => {
-    const pdfFiles = Array.from(files).filter(
+  const addFilesToQueue = useCallback((incoming: FileList | File[]) => {
+    const pdfFiles = Array.from(incoming).filter(
       (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
     )
     if (pdfFiles.length === 0) {
@@ -268,11 +270,37 @@ export default function ReviewPage() {
       return
     }
     setUploadError('')
+    const entries = pdfFiles.map((file) => ({
+      id: `${file.name}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      file,
+      docType: '',
+    }))
+    setQueuedFiles((prev) => [...prev, ...entries])
+  }, [])
+
+  const removeQueuedFile = useCallback((fileId: string) => {
+    setQueuedFiles((prev) => prev.filter((f) => f.id !== fileId))
+  }, [])
+
+  const updateQueuedFileType = useCallback((fileId: string, docType: string) => {
+    setQueuedFiles((prev) => prev.map((f) => f.id === fileId ? { ...f, docType } : f))
+  }, [])
+
+  const submitQueuedFiles = useCallback(async () => {
+    if (queuedFiles.length === 0) return
+    setUploadError('')
     setUploading(true)
     try {
       const fd = new FormData()
-      for (const f of pdfFiles) {
-        fd.append('files', f)
+      const docTypeMap: Record<string, string> = {}
+      for (const f of queuedFiles) {
+        fd.append('files', f.file)
+        if (f.docType) {
+          docTypeMap[f.file.name] = f.docType
+        }
+      }
+      if (Object.keys(docTypeMap).length > 0) {
+        fd.append('doc_types', JSON.stringify(docTypeMap))
       }
       const res = await fetch(`/api/submissions/${id}/documents`, {
         method: 'POST',
@@ -282,13 +310,14 @@ export default function ReviewPage() {
         const body = await res.json().catch(() => ({}))
         throw new Error(body.error || 'Upload failed')
       }
+      setQueuedFiles([])
       await loadData()
     } catch (err: unknown) {
       setUploadError(err instanceof Error ? err.message : 'Upload failed')
     } finally {
       setUploading(false)
     }
-  }, [id, loadData])
+  }, [queuedFiles, id, loadData])
 
   const handleUploadDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation(); setUploadDragOver(true)
@@ -298,14 +327,29 @@ export default function ReviewPage() {
   }, [])
   const handleUploadDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation(); setUploadDragOver(false)
-    if (e.dataTransfer.files.length > 0) handleUploadFiles(e.dataTransfer.files)
-  }, [handleUploadFiles])
+    if (e.dataTransfer.files.length > 0) addFilesToQueue(e.dataTransfer.files)
+  }, [addFilesToQueue])
   const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      handleUploadFiles(e.target.files)
+      addFilesToQueue(e.target.files)
       e.target.value = ''
     }
-  }, [handleUploadFiles])
+  }, [addFilesToQueue])
+
+  async function deleteDocument(docId: number) {
+    if (!confirm('Delete this document?')) return
+    setDeletingDocId(docId)
+    try {
+      const res = await fetch(`/api/documents/${docId}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        alert(body.error || 'Failed to delete document')
+      }
+      await loadData()
+    } finally {
+      setDeletingDocId(null)
+    }
+  }
 
   if (loading) {
     return (
@@ -818,16 +862,28 @@ export default function ReviewPage() {
                         {docTypeLabel(doc.doc_type)}
                       </span>
                     </div>
-                    <a
-                      href={`/api/documents/${doc.id}/download`}
-                      download
-                      className="inline-flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-800 font-medium border border-blue-200 hover:border-blue-400 px-2.5 py-1 rounded-lg transition-colors"
-                    >
-                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                      </svg>
-                      Download
-                    </a>
+                    <div className="flex items-center gap-2">
+                      <a
+                        href={`/api/documents/${doc.id}/download`}
+                        download
+                        className="inline-flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-800 font-medium border border-blue-200 hover:border-blue-400 px-2.5 py-1 rounded-lg transition-colors"
+                      >
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                        </svg>
+                        Download
+                      </a>
+                      <button
+                        onClick={() => deleteDocument(doc.id)}
+                        disabled={deletingDocId === doc.id}
+                        className="inline-flex items-center gap-1.5 text-xs text-red-500 hover:text-red-700 font-medium border border-red-200 hover:border-red-400 px-2.5 py-1 rounded-lg transition-colors disabled:opacity-50"
+                      >
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                        {deletingDocId === doc.id ? 'Deleting...' : 'Delete'}
+                      </button>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -839,12 +895,14 @@ export default function ReviewPage() {
                 onDragOver={handleUploadDragOver}
                 onDragLeave={handleUploadDragLeave}
                 onDrop={handleUploadDrop}
-                onClick={() => fileInputRef.current?.click()}
-                className={`border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${
+                onClick={() => !uploading && queuedFiles.length === 0 && fileInputRef.current?.click()}
+                className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors ${
+                  uploading ? 'pointer-events-none opacity-60' : ''
+                } ${queuedFiles.length > 0 ? '' : 'cursor-pointer'} ${
                   uploadDragOver
                     ? 'border-slate-500 bg-slate-50'
                     : 'border-gray-300 hover:border-gray-400 bg-gray-50/50'
-                } ${uploading ? 'pointer-events-none opacity-60' : ''}`}
+                }`}
               >
                 <input
                   ref={fileInputRef}
@@ -861,6 +919,55 @@ export default function ReviewPage() {
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
                     <p className="text-xs text-gray-500">Uploading & classifying...</p>
+                  </div>
+                ) : queuedFiles.length > 0 ? (
+                  <div className="space-y-2 text-left" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                        {queuedFiles.length} file{queuedFiles.length !== 1 ? 's' : ''} queued
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                      >
+                        + Add more
+                      </button>
+                    </div>
+                    {queuedFiles.map((f) => (
+                      <div key={f.id} className="flex items-center gap-2 bg-white rounded-lg border border-gray-200 px-3 py-2">
+                        <svg className="w-3.5 h-3.5 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
+                        </svg>
+                        <span className="text-xs text-gray-700 truncate flex-1 min-w-0">{f.file.name}</span>
+                        <select
+                          value={f.docType}
+                          onChange={(e) => updateQueuedFileType(f.id, e.target.value)}
+                          className="border border-gray-300 rounded px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-slate-400 bg-white min-w-[100px]"
+                        >
+                          <option value="">Auto-detect</option>
+                          {ALL_DOC_TYPES.map((opt) => (
+                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => removeQueuedFile(f.id)}
+                          className="text-gray-400 hover:text-red-500 transition-colors"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={submitQueuedFiles}
+                      className="w-full bg-[#0f172a] text-white px-3 py-2 rounded-lg text-xs font-medium hover:bg-slate-700 transition-colors"
+                    >
+                      Upload {queuedFiles.length} file{queuedFiles.length !== 1 ? 's' : ''}
+                    </button>
                   </div>
                 ) : (
                   <div className="flex flex-col items-center gap-1.5">
