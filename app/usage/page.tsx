@@ -56,26 +56,56 @@ function formatDateTime(d: string) {
 export default function UsagePage() {
   const [data, setData] = useState<UsageData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [days, setDays] = useState(30)
+  const [retryCount, setRetryCount] = useState(0)
 
   useEffect(() => {
     setLoading(true)
+    setError(null)
     fetch(`/api/usage?days=${days}`)
-      .then((r) => r.json())
-      .then((d) => setData(d))
-      .catch(() => {})
+      .then((r) => {
+        if (!r.ok) throw new Error(`Server error (${r.status})`)
+        return r.json()
+      })
+      .then((d) => {
+        if (d && typeof d.total_calls === 'number') {
+          setData(d)
+        } else {
+          throw new Error('Invalid response from server')
+        }
+      })
+      .catch((err) => {
+        setData(null)
+        setError(err instanceof Error ? err.message : 'Failed to load usage data')
+      })
       .finally(() => setLoading(false))
-  }, [days])
+  }, [days, retryCount])
 
   if (loading) {
     return <div className="p-8 text-gray-500">Loading usage data...</div>
   }
 
   if (!data) {
-    return <div className="p-8 text-red-600">Failed to load usage data.</div>
+    return (
+      <div className="p-8">
+        <p className="text-red-600 mb-3">{error || 'Failed to load usage data.'}</p>
+        <button
+          onClick={() => setRetryCount((c) => c + 1)}
+          className="text-sm text-blue-600 hover:text-blue-800 underline"
+        >
+          Retry
+        </button>
+      </div>
+    )
   }
 
-  const sortedDays = Object.entries(data.by_day).sort(([a], [b]) => a.localeCompare(b))
+  const byDay = data.by_day ?? {}
+  const byModel = data.by_model ?? {}
+  const byFunction = data.by_function ?? {}
+  const recentLogs = data.recent_logs ?? []
+
+  const sortedDays = Object.entries(byDay).sort(([a], [b]) => a.localeCompare(b))
 
   // Find max tokens in a day for bar chart scaling
   const maxDayTokens = Math.max(
@@ -107,19 +137,19 @@ export default function UsagePage() {
       <div className="grid grid-cols-4 gap-4 mb-8">
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">Total Calls</p>
-          <p className="text-2xl font-bold text-gray-900 mt-1">{data.total_calls}</p>
+          <p className="text-2xl font-bold text-gray-900 mt-1">{data.total_calls ?? 0}</p>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">Input Tokens</p>
-          <p className="text-2xl font-bold text-gray-900 mt-1">{formatTokens(data.total_input_tokens)}</p>
+          <p className="text-2xl font-bold text-gray-900 mt-1">{formatTokens(data.total_input_tokens ?? 0)}</p>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">Output Tokens</p>
-          <p className="text-2xl font-bold text-gray-900 mt-1">{formatTokens(data.total_output_tokens)}</p>
+          <p className="text-2xl font-bold text-gray-900 mt-1">{formatTokens(data.total_output_tokens ?? 0)}</p>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <p className="text-xs text-gray-500 font-medium uppercase tracking-wide">Est. Cost</p>
-          <p className="text-2xl font-bold text-emerald-600 mt-1">${data.estimated_cost_usd.toFixed(2)}</p>
+          <p className="text-2xl font-bold text-emerald-600 mt-1">${(data.estimated_cost_usd ?? 0).toFixed(2)}</p>
         </div>
       </div>
 
@@ -127,11 +157,11 @@ export default function UsagePage() {
         {/* By Model */}
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <h2 className="text-sm font-semibold text-gray-700 mb-4">Usage by Model</h2>
-          {Object.keys(data.by_model).length === 0 ? (
+          {Object.keys(byModel).length === 0 ? (
             <p className="text-sm text-gray-400">No usage data yet.</p>
           ) : (
             <div className="space-y-4">
-              {Object.entries(data.by_model).map(([model, usage]) => {
+              {Object.entries(byModel).map(([model, usage]) => {
                 const pricing = PRICING[model] ?? { input: 3, output: 15 }
                 const cost =
                   (usage.input_tokens / 1_000_000) * pricing.input +
@@ -168,11 +198,11 @@ export default function UsagePage() {
         {/* By Function */}
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <h2 className="text-sm font-semibold text-gray-700 mb-4">Usage by Function</h2>
-          {Object.keys(data.by_function).length === 0 ? (
+          {Object.keys(byFunction).length === 0 ? (
             <p className="text-sm text-gray-400">No usage data yet.</p>
           ) : (
             <div className="space-y-4">
-              {Object.entries(data.by_function).map(([fn, usage]) => {
+              {Object.entries(byFunction).map(([fn, usage]) => {
                 const totalTokens = usage.input_tokens + usage.output_tokens
                 return (
                   <div key={fn} className="border border-gray-100 rounded-lg p-3">
@@ -282,7 +312,7 @@ export default function UsagePage() {
         <div className="px-6 py-4 border-b border-gray-200">
           <h2 className="text-sm font-semibold text-gray-700">Recent API Calls</h2>
         </div>
-        {data.recent_logs.length === 0 ? (
+        {recentLogs.length === 0 ? (
           <p className="p-6 text-sm text-gray-400">No API calls logged yet.</p>
         ) : (
           <div className="overflow-x-auto">
@@ -298,7 +328,7 @@ export default function UsagePage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {data.recent_logs.map((log) => (
+                {recentLogs.map((log) => (
                   <tr key={log.id} className="hover:bg-gray-50">
                     <td className="px-4 py-2.5 text-gray-500 text-xs">{formatDateTime(log.created_at)}</td>
                     <td className="px-4 py-2.5 text-gray-700">
