@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
 import { classifyDocument } from '@/lib/ai'
+import { generateFileHash } from '@/lib/security'
 import pdfParse from 'pdf-parse'
 
 // Allow up to 60s for PDF extraction + AI classification
@@ -85,7 +86,8 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
       // Upload to Supabase Storage
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
-      const storagePath = `${submissionId}/${docType}_${safeName}`
+      const fileHash = generateFileHash(buffer)
+      const storagePath = `${submissionId}/${fileHash}_${docType}_${safeName}`
 
       const { error: storageError } = await supabase.storage.from('documents').upload(storagePath, buffer, {
         contentType: 'application/pdf',
