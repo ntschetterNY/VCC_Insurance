@@ -67,6 +67,11 @@ export type DocClassification =
   | 'contract'
   | 'other'
 
+const VALID_DOC_TYPES: Set<string> = new Set<string>([
+  'accord25', 'accord28', 'policy_gl', 'policy_excess',
+  'policy_wc', 'policy_auto', 'endorsement', 'contract', 'other',
+])
+
 export interface ClassificationResult {
   doc_type: DocClassification
   confidence: number
@@ -128,7 +133,12 @@ Classification rules:
   }
 
   try {
-    return JSON.parse(jsonMatch[0]) as ClassificationResult
+    const parsed = JSON.parse(jsonMatch[0]) as ClassificationResult
+    if (!VALID_DOC_TYPES.has(parsed.doc_type)) {
+      console.warn(`[Classify] AI returned invalid doc_type "${parsed.doc_type}", falling back to "other"`)
+      parsed.doc_type = 'other'
+    }
+    return parsed
   } catch {
     return { doc_type: 'other', confidence: 0, description: 'Classification parse error' }
   }
