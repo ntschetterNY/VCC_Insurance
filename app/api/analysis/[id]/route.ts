@@ -72,7 +72,7 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
       issues: analysis.issues,
       flags: analysis.flags,
       checklist: analysis.checklist || {},
-      custom_checks: (analysis as Record<string, unknown>).custom_checks || {},
+      custom_checks: (analysis as unknown as Record<string, unknown>).custom_checks || {},
       raw_response: analysis,
     }, { onConflict: 'submission_id' })
 
