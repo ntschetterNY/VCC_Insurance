@@ -145,12 +145,16 @@ export async function POST(request: NextRequest) {
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
       const storagePath = `${submissionId}/${docType}_${safeName}`
 
-      await supabase.storage.from('documents').upload(storagePath, buffer, {
+      const { error: storageError } = await supabase.storage.from('documents').upload(storagePath, buffer, {
         contentType: 'application/pdf',
       })
+      if (storageError) {
+        console.error(`[Upload] Storage upload failed for "${file.name}":`, storageError)
+        throw new Error(`Failed to store file "${file.name}": ${storageError.message}`)
+      }
 
       // 4. Insert document record
-      await supabase.from('documents').insert({
+      const { error: docInsertError } = await supabase.from('documents').insert({
         submission_id: submissionId,
         doc_type: docType,
         filename: file.name,
@@ -158,6 +162,10 @@ export async function POST(request: NextRequest) {
         extracted_text: text || null,
         processed_at: new Date().toISOString(),
       })
+      if (docInsertError) {
+        console.error(`[Upload] Document insert failed for "${file.name}":`, docInsertError)
+        throw new Error(`Failed to save document record for "${file.name}": ${docInsertError.message}`)
+      }
 
       // 5. Collect text for the deep analysis step
       if (docType === 'accord25' && text) {
@@ -241,6 +249,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ submissionId }, { status: 201 })
   } catch (err) {
     console.error('Upload error:', err)
-    return NextResponse.json({ error: 'Upload failed' }, { status: 500 })
+    const message = err instanceof Error ? err.message : 'Upload failed'
+    return NextResponse.json({ error: message }, { status: 500 })
   }
 }
