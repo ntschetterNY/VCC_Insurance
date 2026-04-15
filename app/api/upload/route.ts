@@ -180,9 +180,10 @@ export async function POST(request: NextRequest) {
     // Flush usage log to DB
     const usageEntries = getAndClearUsageBuffer()
     if (usageEntries.length > 0) {
-      await supabase.from('ai_usage_log').insert(usageEntries).catch((err: unknown) => {
-        console.error('Failed to log AI usage:', err)
-      })
+      const { error: usageErr } = await supabase.from('ai_usage_log').insert(usageEntries)
+      if (usageErr) {
+        console.error('Failed to log AI usage:', usageErr)
+      }
     }
 
     return NextResponse.json({ submissionId }, { status: 201 })
