@@ -15,13 +15,23 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
       .from('submissions')
       .select(`
         *,
-        subcontractors ( name, trade, tier ),
-        assigned_user:users!submissions_assigned_to_fkey ( name )
+        subcontractors ( name, trade, tier )
       `)
       .eq('id', id)
       .single()
 
     if (error || !submission) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
+    // Look up assigned user separately to avoid FK reference errors
+    let assignedUserName: string | null = null
+    if (submission.assigned_to) {
+      const { data: assignedUser } = await supabase
+        .from('users')
+        .select('name')
+        .eq('id', submission.assigned_to)
+        .single()
+      assignedUserName = (assignedUser?.name as string) ?? null
+    }
 
     const { data: documents } = await supabase
       .from('documents')
@@ -76,7 +86,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
       sub_name: sub?.name ?? '',
       trade: sub?.trade ?? '',
       tier: sub?.tier ?? '',
-      assigned_user_name: (submission.assigned_user as Record<string, unknown> | null)?.name ?? null,
+      assigned_user_name: assignedUserName,
       documents: documents ?? [],
       ai_analysis: analysis ?? null,
       reviewer_flags: flags ?? [],
