@@ -293,14 +293,27 @@ export default function UploadPage() {
                 const sub = subcontractors.find((s) => s.id === parseInt(existingSubId))
                 const match = sub ? classifyTrade(sub.trade) : null
                 if (!match || !sub) return null
+                const bgColor = match.schedule.type === 'A' ? 'bg-green-50 border-green-200'
+                  : match.schedule.type === 'B' ? 'bg-yellow-50 border-yellow-200'
+                  : 'bg-red-50 border-red-200'
+                const badgeColor = match.schedule.type === 'A' ? 'bg-green-100 text-green-800'
+                  : match.schedule.type === 'B' ? 'bg-yellow-100 text-yellow-800'
+                  : 'bg-red-100 text-red-800'
                 return (
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 flex items-center gap-3">
-                    <span className="text-xs px-2 py-0.5 rounded-full font-semibold bg-blue-100 text-blue-800">
-                      {match.schedule.label}
-                    </span>
-                    <span className="text-sm text-blue-800">
+                  <div className={`${bgColor} border rounded-lg px-4 py-3`}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Suggested Schedule</span>
+                      <span className={`inline-block px-2.5 py-0.5 rounded text-sm font-bold ${badgeColor}`}>
+                        Schedule {match.schedule.type}
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-700 mb-1">
                       Matched to <strong>{match.matchedTrade}</strong> requirements
-                    </span>
+                    </p>
+                    <div className="flex gap-6 text-xs text-gray-600">
+                      <span>Deductible: <strong>{formatCurrency(match.schedule.deductible)}</strong></span>
+                      <span>Min Limits: <strong>{match.schedule.minLimits.map(formatCurrency).join(' / ')}</strong></span>
+                    </div>
                   </div>
                 )
               })()}
@@ -348,25 +361,34 @@ export default function UploadPage() {
                 </div>
               </div>
 
-              {/* Schedule Classification */}
+              {/* Suggested Schedule Assignment */}
               {trade && (
                 <div className={`rounded-lg border px-4 py-3 text-sm ${
                   scheduleMatch
-                    ? 'bg-blue-50 border-blue-200'
+                    ? scheduleMatch.schedule.type === 'A' ? 'bg-green-50 border-green-200'
+                      : scheduleMatch.schedule.type === 'B' ? 'bg-yellow-50 border-yellow-200'
+                      : 'bg-red-50 border-red-200'
                     : 'bg-amber-50 border-amber-200'
                 }`}>
                   {scheduleMatch ? (
                     <div>
-                      <p className="font-medium text-blue-900">
-                        {scheduleMatch.schedule.label}
-                        <span className="ml-2 text-xs font-normal text-blue-700">
-                          Matched: {scheduleMatch.matchedTrade}
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Suggested Schedule</span>
+                        <span className={`inline-block px-2.5 py-0.5 rounded text-sm font-bold ${
+                          scheduleMatch.schedule.type === 'A' ? 'bg-green-100 text-green-800'
+                          : scheduleMatch.schedule.type === 'B' ? 'bg-yellow-100 text-yellow-800'
+                          : 'bg-red-100 text-red-800'
+                        }`}>
+                          Schedule {scheduleMatch.schedule.type}
                         </span>
+                      </div>
+                      <p className="text-gray-700 text-xs mb-1.5">
+                        Matched to <strong>{scheduleMatch.matchedTrade}</strong>
                       </p>
-                      <div className="flex gap-6 mt-1 text-xs text-blue-700">
-                        <span>Deductible: {formatCurrency(scheduleMatch.schedule.deductible)}</span>
+                      <div className="flex gap-6 text-xs text-gray-600">
+                        <span>Deductible: <strong>{formatCurrency(scheduleMatch.schedule.deductible)}</strong></span>
                         <span>
-                          Min Limits: {scheduleMatch.schedule.minLimits.map(formatCurrency).join(' / ')}
+                          Min Limits: <strong>{scheduleMatch.schedule.minLimits.map(formatCurrency).join(' / ')}</strong>
                         </span>
                       </div>
                     </div>

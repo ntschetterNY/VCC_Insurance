@@ -6,6 +6,8 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
     const supabase = await getDb()
     const body = await req.json() as {
       trade?: string
+      schedule_type?: string | null
+      deductible?: number | null
       schedule_group?: string
       gl_per_occurrence?: number
       gl_aggregate?: number
@@ -19,6 +21,8 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
       .from('schedule')
       .update({
         trade: body.trade ?? undefined,
+        schedule_type: body.schedule_type ?? null,
+        deductible: body.deductible ?? null,
         schedule_group: body.schedule_group ?? undefined,
         gl_per_occurrence: body.gl_per_occurrence ?? null,
         gl_aggregate: body.gl_aggregate ?? null,
