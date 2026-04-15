@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
 import { classifyDocument, analyzeAccord25, getAndClearUsageBuffer } from '@/lib/ai'
-import { sanitizeString } from '@/lib/security'
+import { sanitizeString, generateFileHash } from '@/lib/security'
 import { classifyTrade } from '@/lib/scheduleClassification'
 import pdfParse from 'pdf-parse'
 
@@ -143,7 +143,8 @@ export async function POST(request: NextRequest) {
 
       // 3. Upload to Supabase Storage
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
-      const storagePath = `${submissionId}/${docType}_${safeName}`
+      const fileHash = generateFileHash(buffer)
+      const storagePath = `${submissionId}/${fileHash}_${docType}_${safeName}`
 
       const { error: storageError } = await supabase.storage.from('documents').upload(storagePath, buffer, {
         contentType: 'application/pdf',

@@ -81,7 +81,20 @@ export function decryptField(encoded: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// 3. In-memory rate limiter (per-IP, per endpoint)
+// 3. File content hashing
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate a unique hash for a file based on its content.
+ * Uses SHA-256 to produce a deterministic, collision-resistant identifier.
+ * Returns a hex string truncated to `length` characters (default 12).
+ */
+export function generateFileHash(buffer: Buffer, length = 12): string {
+  return crypto.createHash('sha256').update(buffer).digest('hex').slice(0, length)
+}
+
+// ---------------------------------------------------------------------------
+// 4. In-memory rate limiter (per-IP, per endpoint)
 // ---------------------------------------------------------------------------
 
 interface RateBucket {
@@ -113,7 +126,7 @@ export function rateLimit(
 }
 
 // ---------------------------------------------------------------------------
-// 4. Security headers (applied via middleware / vercel.json)
+// 5. Security headers (applied via middleware / vercel.json)
 // ---------------------------------------------------------------------------
 
 export const SECURITY_HEADERS: Record<string, string> = {
@@ -128,7 +141,7 @@ export const SECURITY_HEADERS: Record<string, string> = {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Audit logging helper
+// 6. Audit logging helper
 // ---------------------------------------------------------------------------
 
 export interface AuditEntry {
