@@ -38,9 +38,21 @@ interface ProcoreContract {
   vendor: string
 }
 
+const DOC_TYPE_OPTIONS = [
+  { value: '', label: 'Auto-detect' },
+  { value: 'accord25', label: 'Accord 25' },
+  { value: 'policy_gl', label: 'GL Policy' },
+  { value: 'policy_excess', label: 'UM Policy' },
+  { value: 'policy_wc', label: 'WC Policy' },
+  { value: 'policy_auto', label: 'Auto Policy' },
+  { value: 'endorsement', label: 'Endorsements' },
+  { value: 'other', label: 'Other' },
+]
+
 interface QueuedFile {
   id: string
   file: File
+  docType: string
 }
 
 function formatCurrency(v: number) {
@@ -166,6 +178,7 @@ export default function UploadPage() {
     const entries: QueuedFile[] = pdfFiles.map((file) => ({
       id: `${file.name}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       file,
+      docType: '',
     }))
     setFiles((prev) => [...prev, ...entries])
   }, [])
@@ -190,6 +203,10 @@ export default function UploadPage() {
 
   const removeFile = useCallback((id: string) => {
     setFiles((prev) => prev.filter((f) => f.id !== id))
+  }, [])
+
+  const updateFileType = useCallback((id: string, docType: string) => {
+    setFiles((prev) => prev.map((f) => f.id === id ? { ...f, docType } : f))
   }, [])
 
   // -------------------------------------------------------------------------
@@ -234,9 +251,16 @@ export default function UploadPage() {
       if (procoreProjectId) fd.append('procore_project_id', procoreProjectId)
       if (procoreContractId) fd.append('procore_contract_id', procoreContractId)
 
-      // Append every PDF — backend will extract text & classify each one
+      // Append every PDF with optional manual type assignments
+      const docTypeMap: Record<string, string> = {}
       for (const f of files) {
         fd.append('files', f.file)
+        if (f.docType) {
+          docTypeMap[f.file.name] = f.docType
+        }
+      }
+      if (Object.keys(docTypeMap).length > 0) {
+        fd.append('doc_types', JSON.stringify(docTypeMap))
       }
 
       const res = await fetch('/api/upload', { method: 'POST', body: fd })
@@ -498,9 +522,15 @@ export default function UploadPage() {
           </div>
         </div>
 
-        {/* File list */}
+        {/* File list with type assignment */}
         {files.length > 0 && (
-          <div className="space-y-1.5">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                {files.length} file{files.length !== 1 ? 's' : ''} queued
+              </p>
+              <p className="text-xs text-gray-400">Assign document types or leave as Auto-detect</p>
+            </div>
             {files.map((f) => (
               <div
                 key={f.id}
@@ -509,8 +539,17 @@ export default function UploadPage() {
                 <svg className="w-4 h-4 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
                 </svg>
-                <span className="text-sm text-gray-700 truncate flex-1">{f.file.name}</span>
-                <span className="text-xs text-gray-400">{(f.file.size / 1024).toFixed(0)} KB</span>
+                <span className="text-sm text-gray-700 truncate flex-1 min-w-0">{f.file.name}</span>
+                <select
+                  value={f.docType}
+                  onChange={(e) => updateFileType(f.id, e.target.value)}
+                  className="border border-gray-300 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-slate-500 bg-white min-w-[130px]"
+                >
+                  {DOC_TYPE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+                <span className="text-xs text-gray-400 whitespace-nowrap">{(f.file.size / 1024).toFixed(0)} KB</span>
                 <button
                   type="button"
                   onClick={() => removeFile(f.id)}

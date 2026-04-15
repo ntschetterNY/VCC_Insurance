@@ -153,6 +153,13 @@ export interface ChecklistResult {
   excess_compliant: string | null
   excess_comments: string | null
 
+  // Commercial Auto
+  auto_carrier: string | null
+  auto_limits: string | null
+  auto_term: string | null
+  auto_full_policy: string | null
+  auto_comments: string | null
+
   // Workers Compensation
   wc_carrier: string | null
   wc_limits: string | null
@@ -218,6 +225,13 @@ Review the documents for ALL of the following categories and fields:
 - **excess_type**: Is it an Excess or Umbrella policy?
 - **excess_compliant**: Is the Excess/Umbrella coverage compliant? (Y/N)
 - **excess_comments**: Any additional Excess/Umbrella observations or notes
+
+### COMMERCIAL AUTO
+- **auto_carrier**: Name of the Commercial Auto insurance carrier
+- **auto_limits**: Auto liability limits (e.g., "$1M CSL" or "$1M/$1M/$1M")
+- **auto_term**: Policy term dates
+- **auto_full_policy**: Was a full auto policy submitted? (Y/N/Unknown)
+- **auto_comments**: Any additional auto observations or notes
 
 ### WORKERS COMPENSATION
 - **wc_carrier**: Name of the WC insurance carrier
@@ -331,6 +345,11 @@ Return ONLY valid JSON matching this exact structure (use null for fields you ca
     "excess_type": null,
     "excess_compliant": null,
     "excess_comments": null,
+    "auto_carrier": null,
+    "auto_limits": null,
+    "auto_term": null,
+    "auto_full_policy": null,
+    "auto_comments": null,
     "wc_carrier": null,
     "wc_limits": null,
     "wc_term": null,
