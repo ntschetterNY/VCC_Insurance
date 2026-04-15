@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { analyzeAccord25, getAndClearUsageBuffer } from '@/lib/ai'
 
+// Allow up to 60s for deep AI analysis (Sonnet)
+export const maxDuration = 60
+
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
   try {
     const supabase = await getDb()

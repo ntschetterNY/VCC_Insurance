@@ -4,6 +4,9 @@ import { requireAuth } from '@/lib/auth'
 import { classifyDocument } from '@/lib/ai'
 import pdfParse from 'pdf-parse'
 
+// Allow up to 60s for PDF extraction + AI classification
+export const maxDuration = 60
+
 async function extractTextFromBuffer(buffer: Buffer, maxChars = 8000): Promise<string> {
   try {
     const data = await pdfParse(buffer)

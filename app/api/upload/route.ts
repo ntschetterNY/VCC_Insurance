@@ -6,6 +6,9 @@ import { sanitizeString } from '@/lib/security'
 import { classifyTrade } from '@/lib/scheduleClassification'
 import pdfParse from 'pdf-parse'
 
+// Allow up to 60s for PDF extraction + AI classification + analysis
+export const maxDuration = 60
+
 // ---------------------------------------------------------------------------
 // Extract text from a PDF buffer server-side
 // ---------------------------------------------------------------------------
