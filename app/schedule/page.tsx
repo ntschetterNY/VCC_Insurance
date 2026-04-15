@@ -5,6 +5,8 @@ import { useState, useEffect } from 'react'
 interface ScheduleEntry {
   id: number
   trade: string
+  schedule_type: string | null
+  deductible: number | null
   gl_per_occurrence: number
   gl_aggregate: number
   workers_comp: number
@@ -15,6 +17,8 @@ interface ScheduleEntry {
 
 const blank = (): Omit<ScheduleEntry, 'id'> => ({
   trade: '',
+  schedule_type: null,
+  deductible: null,
   gl_per_occurrence: 0,
   gl_aggregate: 0,
   workers_comp: 0,
@@ -51,6 +55,8 @@ export default function SchedulePage() {
     setEditId(entry.id)
     setForm({
       trade: entry.trade,
+      schedule_type: entry.schedule_type,
+      deductible: entry.deductible,
       gl_per_occurrence: entry.gl_per_occurrence,
       gl_aggregate: entry.gl_aggregate,
       workers_comp: entry.workers_comp,
@@ -129,16 +135,42 @@ export default function SchedulePage() {
             {editId !== null ? 'Edit Entry' : 'New Schedule Entry'}
           </h2>
           <form onSubmit={save} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Trade *</label>
-              <input
-                type="text"
-                value={form.trade}
-                onChange={(e) => setField('trade', e.target.value)}
-                placeholder="e.g. Electrical"
-                className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-full max-w-xs focus:outline-none focus:ring-2 focus:ring-slate-500"
-                required
-              />
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Trade *</label>
+                <input
+                  type="text"
+                  value={form.trade}
+                  onChange={(e) => setField('trade', e.target.value)}
+                  placeholder="e.g. Electrical (interior)"
+                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-slate-500"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Schedule</label>
+                <select
+                  value={form.schedule_type || ''}
+                  onChange={(e) => setField('schedule_type', e.target.value || null as unknown as string)}
+                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-slate-500"
+                >
+                  <option value="">— None —</option>
+                  <option value="A">Schedule A</option>
+                  <option value="B">Schedule B</option>
+                  <option value="C">Schedule C</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Deductible ($)</label>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={form.deductible ?? 0}
+                  onChange={(e) => setField('deductible', parseInt(e.target.value) || 0)}
+                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm w-full focus:outline-none focus:ring-2 focus:ring-slate-500"
+                />
+              </div>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               {[
@@ -202,6 +234,8 @@ export default function SchedulePage() {
             <thead>
               <tr className="border-b border-gray-200 bg-gray-50">
                 <th className="px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Trade</th>
+                <th className="px-5 py-3 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Schedule</th>
+                <th className="px-5 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Deductible</th>
                 <th className="px-5 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">GL / Occ</th>
                 <th className="px-5 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">GL Agg</th>
                 <th className="px-5 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Workers Comp</th>
@@ -215,6 +249,18 @@ export default function SchedulePage() {
               {entries.map((e) => (
                 <tr key={e.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-5 py-3 font-medium text-gray-900">{e.trade}</td>
+                  <td className="px-5 py-3 text-center">
+                    {e.schedule_type ? (
+                      <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${
+                        e.schedule_type === 'A' ? 'bg-green-100 text-green-800' :
+                        e.schedule_type === 'B' ? 'bg-yellow-100 text-yellow-800' :
+                        'bg-red-100 text-red-800'
+                      }`}>
+                        {e.schedule_type}
+                      </span>
+                    ) : '—'}
+                  </td>
+                  <td className="px-5 py-3 text-right text-gray-700">{e.deductible ? formatCurrency(e.deductible) : '—'}</td>
                   <td className="px-5 py-3 text-right text-gray-700">{formatCurrency(e.gl_per_occurrence)}</td>
                   <td className="px-5 py-3 text-right text-gray-700">{formatCurrency(e.gl_aggregate)}</td>
                   <td className="px-5 py-3 text-right text-gray-700">{formatCurrency(e.workers_comp)}</td>

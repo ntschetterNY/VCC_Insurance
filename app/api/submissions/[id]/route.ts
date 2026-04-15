@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { requireAuth, requireAdmin } from '@/lib/auth'
+import { classifyTrade } from '@/lib/scheduleClassification'
 
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
   const user = await requireAuth()
@@ -50,6 +51,19 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
         .eq('trade', trade)
         .single()
       schedule = data
+
+      // Fall back to fuzzy match if exact trade doesn't exist in schedule
+      if (!schedule) {
+        const match = classifyTrade(trade)
+        if (match) {
+          const { data: fuzzy } = await supabase
+            .from('schedule')
+            .select('*')
+            .eq('trade', match.matchedTrade)
+            .single()
+          schedule = fuzzy
+        }
+      }
     }
 
     const { data: allUsers } = await supabase

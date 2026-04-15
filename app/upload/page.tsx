@@ -1,7 +1,13 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
+import {
+  classifyTrade,
+  getTradeOptions,
+  SCHEDULE_DEFINITIONS,
+  type ScheduleDefinition,
+} from '@/lib/scheduleClassification'
 
 interface Subcontractor {
   id: number
@@ -27,6 +33,13 @@ interface QueuedFile {
   file: File
 }
 
+function formatCurrency(v: number) {
+  if (!v) return '—'
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(v % 1_000_000 === 0 ? 0 : 1)}M`
+  if (v >= 1_000) return `$${(v / 1_000).toFixed(0)}K`
+  return `$${v}`
+}
+
 export default function UploadPage() {
   const router = useRouter()
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -50,6 +63,12 @@ export default function UploadPage() {
   const [loadingProjects, setLoadingProjects] = useState(false)
   const [loadingContracts, setLoadingContracts] = useState(false)
   const [procoreError, setProcoreError] = useState('')
+
+  // Trade options from Attachment 1 schedule chart
+  const tradeOptions = useMemo(() => getTradeOptions(), [])
+
+  // Determine schedule classification whenever trade changes
+  const scheduleMatch = useMemo(() => classifyTrade(trade), [trade])
 
   useEffect(() => {
     fetch('/api/subcontractors').then((r) => r.json()).then(setSubcontractors).catch(() => {})
@@ -101,6 +120,24 @@ export default function UploadPage() {
       })
       .finally(() => setLoadingContracts(false))
   }, [procoreProjectId])
+
+  // Auto-populate Sub Name & Trade when a commitment is selected
+  const handleCommitmentChange = useCallback(
+    (contractId: string) => {
+      setProcoreContractId(contractId)
+      if (!contractId) return
+      const contract = procoreContracts.find(
+        (c) => String(c.id) === contractId
+      )
+      if (!contract) return
+      // Fill in Sub Name from vendor, Trade from title (unless using existing sub)
+      if (!useExisting) {
+        if (contract.vendor) setName(contract.vendor)
+        if (contract.title) setTrade(contract.title)
+      }
+    },
+    [procoreContracts, useExisting]
+  )
 
   // -------------------------------------------------------------------------
   // Add files (from drop or picker)
@@ -257,11 +294,17 @@ export default function UploadPage() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">Trade</label>
                   <input
                     type="text"
+                    list="trade-options"
                     value={trade}
                     onChange={(e) => setTrade(e.target.value)}
-                    placeholder="e.g. Electrical"
+                    placeholder="e.g. Electrical (interior)"
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
                   />
+                  <datalist id="trade-options">
+                    {tradeOptions.map((t) => (
+                      <option key={t} value={t} />
+                    ))}
+                  </datalist>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Tier</label>
@@ -275,6 +318,36 @@ export default function UploadPage() {
                   </select>
                 </div>
               </div>
+
+              {/* Schedule Classification */}
+              {trade && (
+                <div className={`rounded-lg border px-4 py-3 text-sm ${
+                  scheduleMatch
+                    ? 'bg-blue-50 border-blue-200'
+                    : 'bg-amber-50 border-amber-200'
+                }`}>
+                  {scheduleMatch ? (
+                    <div>
+                      <p className="font-medium text-blue-900">
+                        {scheduleMatch.schedule.label}
+                        <span className="ml-2 text-xs font-normal text-blue-700">
+                          Matched: {scheduleMatch.matchedTrade}
+                        </span>
+                      </p>
+                      <div className="flex gap-6 mt-1 text-xs text-blue-700">
+                        <span>Deductible: {formatCurrency(scheduleMatch.schedule.deductible)}</span>
+                        <span>
+                          Min Limits: {scheduleMatch.schedule.minLimits.map(formatCurrency).join(' / ')}
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-amber-800">
+                      No matching schedule found for &ldquo;{trade}&rdquo; — select a trade from the list above or verify manually.
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -308,7 +381,7 @@ export default function UploadPage() {
                 <label className="block text-xs font-medium text-gray-600 mb-1">Commitment</label>
                 <select
                   value={procoreContractId}
-                  onChange={(e) => setProcoreContractId(e.target.value)}
+                  onChange={(e) => handleCommitmentChange(e.target.value)}
                   disabled={!procoreProjectId || loadingContracts}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 disabled:bg-gray-50"
                 >
