@@ -8,6 +8,7 @@ interface MemoryEntry {
   description: string
   category: string
   severity: string
+  active: boolean
   created_at: string
 }
 
@@ -16,6 +17,7 @@ const categoryColors: Record<string, string> = {
   'Common Mistake': 'bg-yellow-100 text-yellow-800',
   'Watch Item': 'bg-orange-100 text-orange-800',
   'Process Note': 'bg-blue-100 text-blue-800',
+  'Review Check': 'bg-emerald-100 text-emerald-800',
 }
 
 function formatDate(d: string) {
@@ -31,6 +33,7 @@ export default function MemoryPage() {
   const [category, setCategory] = useState('Process Note')
   const [severity, setSeverity] = useState('medium')
   const [submitting, setSubmitting] = useState(false)
+  const [filter, setFilter] = useState('all')
 
   async function load() {
     const res = await fetch('/api/memory')
@@ -67,24 +70,71 @@ export default function MemoryPage() {
     await load()
   }
 
+  async function toggleActive(id: number, active: boolean) {
+    await fetch(`/api/memory/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: !active }),
+    })
+    await load()
+  }
+
+  const filtered = filter === 'all' ? entries : entries.filter((e) => e.category === filter)
+  const reviewChecks = entries.filter((e) => e.category === 'Review Check')
+  const activeChecks = reviewChecks.filter((e) => e.active)
+
   return (
     <div className="p-8">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-900">Company Memory</h1>
-        <p className="text-gray-500 mt-1">Institutional knowledge, flags, and process notes for insurance review</p>
+      <div className="flex items-center justify-between mb-8">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Company Memory</h1>
+          <p className="text-gray-500 mt-1">Institutional knowledge, flags, and process notes for insurance review</p>
+        </div>
+        <div className="flex gap-1 bg-gray-100 rounded-lg p-1 text-xs">
+          {['all', 'Review Check', 'Exclusion', 'Watch Item', 'Process Note'].map((f) => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`px-3 py-1.5 rounded-md font-medium transition-colors ${filter === f ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              {f === 'all' ? 'All' : f}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {/* Review Checks summary banner */}
+      {reviewChecks.length > 0 && filter !== 'all' && filter !== 'Review Check' ? null : (
+        reviewChecks.length > 0 && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-5 py-3 mb-6 flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-emerald-800">
+                {activeChecks.length} active review check{activeChecks.length !== 1 ? 's' : ''} will be included in AI analysis
+              </p>
+              <p className="text-xs text-emerald-600 mt-0.5">
+                These items are checked automatically during every document analysis.
+              </p>
+            </div>
+            <span className="text-xs bg-emerald-200 text-emerald-800 px-2 py-0.5 rounded-full font-medium">
+              {activeChecks.length}/{reviewChecks.length}
+            </span>
+          </div>
+        )
+      )}
 
       {/* Cards Grid */}
       {loading ? (
-        <p className="text-gray-500 text-sm">Loading…</p>
-      ) : entries.length === 0 ? (
+        <p className="text-gray-500 text-sm">Loading...</p>
+      ) : filtered.length === 0 ? (
         <div className="text-center py-12 bg-white rounded-xl border border-gray-200 mb-8">
-          <p className="text-gray-500">No memory entries yet. Add one below.</p>
+          <p className="text-gray-500">
+            {filter === 'all' ? 'No memory entries yet. Add one below.' : `No "${filter}" entries. Add one below.`}
+          </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-8">
-          {entries.map((entry) => (
-            <div key={entry.id} className="bg-white rounded-xl border border-gray-200 p-5 flex flex-col">
+          {filtered.map((entry) => (
+            <div key={entry.id} className={`bg-white rounded-xl border p-5 flex flex-col ${entry.category === 'Review Check' && !entry.active ? 'border-gray-200 opacity-60' : 'border-gray-200'}`}>
               <div className="flex items-start justify-between mb-2">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${categoryColors[entry.category] ?? 'bg-gray-100 text-gray-700'}`}>
@@ -98,6 +148,18 @@ export default function MemoryPage() {
                     }`}>
                       {entry.severity}
                     </span>
+                  )}
+                  {entry.category === 'Review Check' && (
+                    <button
+                      onClick={() => toggleActive(entry.id, entry.active)}
+                      className={`text-xs px-2 py-0.5 rounded-full font-medium transition-colors ${
+                        entry.active
+                          ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                          : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                      }`}
+                    >
+                      {entry.active ? 'Active' : 'Inactive'}
+                    </button>
                   )}
                 </div>
                 <button
@@ -142,6 +204,7 @@ export default function MemoryPage() {
                   onChange={(e) => setCategory(e.target.value)}
                   className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
                 >
+                  <option>Review Check</option>
                   <option>Exclusion</option>
                   <option>Common Mistake</option>
                   <option>Watch Item</option>

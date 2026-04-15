@@ -22,6 +22,7 @@ export async function POST(req: NextRequest) {
     const supabase = await getDb()
     const body = await req.json() as {
       trade: string
+      schedule_group?: string
       gl_per_occurrence?: number
       gl_aggregate?: number
       workers_comp?: number
@@ -36,6 +37,7 @@ export async function POST(req: NextRequest) {
       .from('schedule')
       .insert({
         trade: body.trade,
+        schedule_group: body.schedule_group ?? 'A',
         gl_per_occurrence: body.gl_per_occurrence ?? null,
         gl_aggregate: body.gl_aggregate ?? null,
         workers_comp: body.workers_comp ?? null,

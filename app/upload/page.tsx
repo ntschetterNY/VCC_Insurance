@@ -5,8 +5,6 @@ import { useRouter } from 'next/navigation'
 import {
   classifyTrade,
   getTradeOptions,
-  SCHEDULE_DEFINITIONS,
-  type ScheduleDefinition,
 } from '@/lib/scheduleClassification'
 
 interface Subcontractor {
@@ -14,6 +12,18 @@ interface Subcontractor {
   name: string
   trade: string
   tier: string
+}
+
+interface ScheduleEntry {
+  id: number
+  trade: string
+  schedule_group: string
+  gl_per_occurrence: number
+  gl_aggregate: number
+  workers_comp: number
+  auto_liability: number
+  umbrella: number
+  notes: string
 }
 
 interface ProcoreProject {
@@ -44,6 +54,7 @@ export default function UploadPage() {
   const router = useRouter()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [subcontractors, setSubcontractors] = useState<Subcontractor[]>([])
+  const [schedules, setSchedules] = useState<ScheduleEntry[]>([])
   const [useExisting, setUseExisting] = useState(false)
   const [existingSubId, setExistingSubId] = useState('')
   const [name, setName] = useState('')
@@ -72,6 +83,7 @@ export default function UploadPage() {
 
   useEffect(() => {
     fetch('/api/subcontractors').then((r) => r.json()).then(setSubcontractors).catch(() => {})
+    fetch('/api/schedule').then((r) => r.json()).then((d) => { if (Array.isArray(d)) setSchedules(d) }).catch(() => {})
     fetch('/api/procore').then((r) => r.json()).then((d) => {
       if (d.configured) {
         setProcoreConfigured(true)
@@ -262,19 +274,36 @@ export default function UploadPage() {
           </div>
 
           {useExisting ? (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Select Subcontractor</label>
-              <select
-                value={existingSubId}
-                onChange={(e) => setExistingSubId(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
-                required
-              >
-                <option value="">— Select —</option>
-                {subcontractors.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name} ({s.trade || 'No trade'})</option>
-                ))}
-              </select>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Select Subcontractor</label>
+                <select
+                  value={existingSubId}
+                  onChange={(e) => setExistingSubId(e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
+                  required
+                >
+                  <option value="">— Select —</option>
+                  {subcontractors.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name} ({s.trade || 'No trade'})</option>
+                  ))}
+                </select>
+              </div>
+              {(() => {
+                const sub = subcontractors.find((s) => s.id === parseInt(existingSubId))
+                const match = sub ? classifyTrade(sub.trade) : null
+                if (!match || !sub) return null
+                return (
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 flex items-center gap-3">
+                    <span className="text-xs px-2 py-0.5 rounded-full font-semibold bg-blue-100 text-blue-800">
+                      {match.schedule.label}
+                    </span>
+                    <span className="text-sm text-blue-800">
+                      Matched to <strong>{match.matchedTrade}</strong> requirements
+                    </span>
+                  </div>
+                )
+              })()}
             </div>
           ) : (
             <div className="space-y-4">

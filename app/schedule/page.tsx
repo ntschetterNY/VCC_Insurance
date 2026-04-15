@@ -7,6 +7,7 @@ interface ScheduleEntry {
   trade: string
   schedule_type: string | null
   deductible: number | null
+  schedule_group: string
   gl_per_occurrence: number
   gl_aggregate: number
   workers_comp: number
@@ -15,10 +16,20 @@ interface ScheduleEntry {
   notes: string
 }
 
+const SCHEDULE_GROUPS = ['A', 'B', 'C', 'D']
+
+const GROUP_COLORS: Record<string, string> = {
+  A: 'bg-blue-100 text-blue-800',
+  B: 'bg-purple-100 text-purple-800',
+  C: 'bg-amber-100 text-amber-800',
+  D: 'bg-gray-100 text-gray-700',
+}
+
 const blank = (): Omit<ScheduleEntry, 'id'> => ({
   trade: '',
   schedule_type: null,
   deductible: null,
+  schedule_group: 'A',
   gl_per_occurrence: 0,
   gl_aggregate: 0,
   workers_comp: 0,
@@ -57,6 +68,7 @@ export default function SchedulePage() {
       trade: entry.trade,
       schedule_type: entry.schedule_type,
       deductible: entry.deductible,
+      schedule_group: entry.schedule_group || 'A',
       gl_per_occurrence: entry.gl_per_occurrence,
       gl_aggregate: entry.gl_aggregate,
       workers_comp: entry.workers_comp,

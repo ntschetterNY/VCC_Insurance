@@ -31,6 +31,7 @@ interface SubmissionDetail {
     issues: string[]
     flags: string[]
     checklist: Record<string, string | null>
+    custom_checks?: Record<string, string | null>
     created_at: string
   } | null
   reviewer_flags: {
@@ -44,6 +45,7 @@ interface SubmissionDetail {
     trade: string
     schedule_type: string | null
     deductible: number | null
+    schedule_group: string
     gl_per_occurrence: number
     gl_aggregate: number
     workers_comp: number
@@ -546,6 +548,30 @@ export default function ReviewPage() {
                           })}
                         </div>
                       </div>
+
+                      {/* Custom Review Checks */}
+                      {analysis.custom_checks && Object.keys(analysis.custom_checks).length > 0 && (
+                        <div className="border border-emerald-200 rounded-lg overflow-hidden">
+                          <div className="bg-emerald-50 px-4 py-2 border-b border-emerald-200">
+                            <h4 className="text-xs font-semibold text-emerald-700 uppercase tracking-wide">Custom Review Checks</h4>
+                          </div>
+                          <div className="divide-y divide-gray-100">
+                            {Object.entries(analysis.custom_checks).map(([checkName, result]) => {
+                              if (!result) return null
+                              const isPass = /^(y|yes|found|present|included|compliant)/i.test(result)
+                              const isFail = /^(n|no|not found|missing|absent|excluded|non-compliant)/i.test(result)
+                              return (
+                                <div key={checkName} className="flex justify-between px-4 py-2 text-sm gap-4">
+                                  <span className="text-gray-600 shrink-0">{checkName}</span>
+                                  <span className={`font-medium text-right ${isFail ? 'text-red-700' : isPass ? 'text-green-700' : 'text-gray-800'}`}>
+                                    {result}
+                                  </span>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -675,7 +701,19 @@ export default function ReviewPage() {
           {/* Schedule Requirements */}
           {schedule && (
             <div className="bg-white rounded-xl border border-gray-200 p-5">
-              <h3 className="text-sm font-semibold text-gray-900 mb-3">Schedule: {schedule.trade}</h3>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-gray-900">Schedule: {schedule.trade}</h3>
+                {schedule.schedule_group && (
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
+                    schedule.schedule_group === 'A' ? 'bg-blue-100 text-blue-800' :
+                    schedule.schedule_group === 'B' ? 'bg-purple-100 text-purple-800' :
+                    schedule.schedule_group === 'C' ? 'bg-amber-100 text-amber-800' :
+                    'bg-gray-100 text-gray-700'
+                  }`}>
+                    Group {schedule.schedule_group}
+                  </span>
+                )}
+              </div>
               <dl className="space-y-1.5 text-sm">
                 <div className="flex justify-between">
                   <dt className="text-gray-500">GL / Occurrence</dt>
