@@ -1,8 +1,20 @@
 import Anthropic from '@anthropic-ai/sdk'
 
-const client = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-})
+// Lazy-initialized client — avoids crashing the module when
+// ANTHROPIC_API_KEY is not yet configured.
+let _client: Anthropic | null = null
+function getClient(): Anthropic {
+  if (!_client) {
+    const apiKey = process.env.ANTHROPIC_API_KEY
+    if (!apiKey) {
+      throw new Error(
+        'ANTHROPIC_API_KEY is not configured. Set it in .env.local to enable AI features.'
+      )
+    }
+    _client = new Anthropic({ apiKey })
+  }
+  return _client
+}
 
 // Max characters sent to Claude per document — keeps token usage low
 const MAX_ACCORD_CHARS = 8000
@@ -76,7 +88,7 @@ export async function classifyDocument(
     hintsBlock = `\n\nPrevious classification corrections (use these to improve accuracy):\n${classificationHints.map((h) => `- ${h}`).join('\n')}`
   }
 
-  const message = await client.messages.create({
+  const message = await getClient().messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 256,
     messages: [{
@@ -367,7 +379,7 @@ Return ONLY valid JSON matching this exact structure (use null for fields you ca
   }${customChecksJson}
 }`
 
-  const message = await client.messages.create({
+  const message = await getClient().messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 4096,
     messages: [{ role: 'user', content: prompt }],
