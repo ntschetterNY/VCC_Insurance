@@ -73,6 +73,18 @@ function formatDate(d: string | null) {
   return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
+const DOC_TYPE_LABELS: Record<string, string> = {
+  accord25: 'ACORD 25 — Certificate of Liability',
+  accord28: 'ACORD 28 — Evidence of Property',
+  policy_gl: 'General Liability Policy',
+  policy_excess: 'Excess / Umbrella Policy',
+  policy_wc: 'Workers Compensation Policy',
+  policy_auto: 'Commercial Auto Policy',
+  endorsement: 'Endorsement',
+  contract: 'Subcontract Agreement',
+  other: 'Other Document',
+}
+
 const severityColors: Record<string, string> = {
   low: 'bg-blue-100 text-blue-800',
   medium: 'bg-yellow-100 text-yellow-800',
@@ -90,6 +102,8 @@ export default function ReviewPage() {
   const [reanalyzing, setReanalyzing] = useState(false)
   const [assignedTo, setAssignedTo] = useState<number | ''>('')
   const [deleting, setDeleting] = useState(false)
+  const [procoreExporting, setProcoreExporting] = useState(false)
+  const [procoreResult, setProcoreResult] = useState<{ success: boolean; message: string } | null>(null)
 
   // Flag form
   const [flagType, setFlagType] = useState('')
@@ -207,6 +221,37 @@ export default function ReviewPage() {
     }
   }
 
+  async function pushToProcore() {
+    if (!data?.procore_project_id) return
+    if (!confirm('Push all documents and insurance data to Procore?')) return
+    setProcoreExporting(true)
+    setProcoreResult(null)
+    try {
+      const res = await fetch('/api/procore/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          submission_id: parseInt(id),
+          project_id: data.procore_project_id,
+          contract_id: data.procore_contract_id || undefined,
+        }),
+      })
+      const result = await res.json()
+      if (result.success) {
+        setProcoreResult({ success: true, message: `Successfully exported ${result.exported} document(s) to Procore.` })
+      } else {
+        setProcoreResult({
+          success: false,
+          message: `Exported ${result.exported ?? 0}, failed ${result.failed ?? 0}. ${result.error || ''}`,
+        })
+      }
+    } catch {
+      setProcoreResult({ success: false, message: 'Failed to connect to Procore.' })
+    } finally {
+      setProcoreExporting(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="p-8 flex items-center justify-center min-h-64">
@@ -284,8 +329,23 @@ export default function ReviewPage() {
               {deleting ? 'Deleting…' : 'Delete'}
             </button>
           )}
+          {data.status === 'approved' && data.procore_project_id && (
+            <button
+              onClick={pushToProcore}
+              disabled={procoreExporting}
+              className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-orange-600 transition-colors disabled:opacity-50"
+            >
+              {procoreExporting ? 'Pushing…' : 'Push to Procore'}
+            </button>
+          )}
         </div>
       </div>
+      {procoreResult && (
+        <div className={`mb-6 rounded-lg px-4 py-3 text-sm font-medium ${procoreResult.success ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
+          {procoreResult.message}
+          <button onClick={() => setProcoreResult(null)} className="ml-3 text-xs underline opacity-70 hover:opacity-100">Dismiss</button>
+        </div>
+      )}
 
       <div className="grid grid-cols-3 gap-6">
         <div className="col-span-2 space-y-6">
@@ -647,25 +707,35 @@ export default function ReviewPage() {
         <div className="space-y-5">
           {/* Documents */}
           <div className="bg-white rounded-xl border border-gray-200 p-5">
-            <h3 className="text-sm font-semibold text-gray-900 mb-3">Documents</h3>
+            <h3 className="text-sm font-semibold text-gray-900 mb-3">
+              Documents
+              <span className="ml-2 text-xs text-gray-400 font-normal">({data.documents.length})</span>
+            </h3>
             {data.documents.length === 0 ? (
               <p className="text-sm text-gray-400">No documents uploaded</p>
             ) : (
               <ul className="space-y-3">
                 {data.documents.map((doc) => (
-                  <li key={doc.id}>
+                  <li key={doc.id} className="border border-gray-100 rounded-lg p-3">
                     <p className="font-medium text-gray-800 text-sm truncate" title={doc.filename}>{doc.filename}</p>
-                    <p className="text-xs text-gray-400 capitalize mb-1">{doc.doc_type === 'accord25' ? 'Accord 25' : 'Full Policy'}</p>
-                    <a
-                      href={`/api/documents/${doc.id}/download`}
-                      download
-                      className="inline-flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-800 font-medium border border-blue-200 hover:border-blue-400 px-2.5 py-1 rounded-lg transition-colors"
-                    >
-                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                      </svg>
-                      Download
-                    </a>
+                    <p className="text-xs text-gray-500 mt-0.5 mb-1">{DOC_TYPE_LABELS[doc.doc_type] ?? doc.doc_type}</p>
+                    <div className="flex items-center gap-2">
+                      <a
+                        href={`/api/documents/${doc.id}/download`}
+                        download
+                        className="inline-flex items-center gap-1.5 text-xs text-blue-600 hover:text-blue-800 font-medium border border-blue-200 hover:border-blue-400 px-2.5 py-1 rounded-lg transition-colors"
+                      >
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                        </svg>
+                        Download
+                      </a>
+                      {doc.processed_at ? (
+                        <span className="text-[10px] text-green-600">Processed</span>
+                      ) : (
+                        <span className="text-[10px] text-gray-400">Pending</span>
+                      )}
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -703,14 +773,14 @@ export default function ReviewPage() {
             <div className="bg-white rounded-xl border border-gray-200 p-5">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-gray-900">Schedule: {schedule.trade}</h3>
-                {schedule.schedule_group && (
+                {schedule.schedule_type && (
                   <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
-                    schedule.schedule_group === 'A' ? 'bg-blue-100 text-blue-800' :
-                    schedule.schedule_group === 'B' ? 'bg-purple-100 text-purple-800' :
-                    schedule.schedule_group === 'C' ? 'bg-amber-100 text-amber-800' :
+                    schedule.schedule_type === 'A' ? 'bg-green-100 text-green-800' :
+                    schedule.schedule_type === 'B' ? 'bg-yellow-100 text-yellow-800' :
+                    schedule.schedule_type === 'C' ? 'bg-red-100 text-red-800' :
                     'bg-gray-100 text-gray-700'
                   }`}>
-                    Group {schedule.schedule_group}
+                    Schedule {schedule.schedule_type}
                   </span>
                 )}
               </div>

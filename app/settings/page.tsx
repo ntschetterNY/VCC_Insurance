@@ -404,69 +404,61 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* Procore Integration */}
-      <div className="bg-white rounded-xl border border-gray-200">
-        <div className="px-6 py-4 border-b border-gray-200 flex items-center gap-3">
-          <div className="w-8 h-8 bg-orange-100 rounded-lg flex items-center justify-center">
-            <svg className="w-4 h-4 text-orange-600" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zm0 5a1 1 0 011-1h6a1 1 0 010 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h6a1 1 0 010 2H4a1 1 0 01-1-1z" clipRule="evenodd" />
-            </svg>
-          </div>
-          <div>
-            <h2 className="text-base font-semibold text-gray-900">Procore Integration</h2>
-            <p className="text-xs text-gray-500">Pull contracts from Procore projects for insurance logging</p>
-          </div>
-          {procore.configured && (
-            <span className="ml-auto text-xs bg-green-100 text-green-700 px-2.5 py-1 rounded-full font-medium">Connected</span>
-          )}
-        </div>
-        <form onSubmit={saveProcore} className="p-6 space-y-4">
-          {!isAdmin && (
-            <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2">
-              Only admins can edit Procore credentials.
-            </p>
-          )}
-          <div className="grid grid-cols-3 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Client ID</label>
-              <input
-                type="text"
-                value={procore.client_id}
-                onChange={(e) => setProcore({ ...procore, client_id: e.target.value })}
-                disabled={!isAdmin}
-                placeholder="Procore OAuth Client ID"
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 disabled:bg-gray-50 disabled:text-gray-400"
-              />
+      {/* Procore Integration — admin only */}
+      {isAdmin && (
+        <div className="bg-white rounded-xl border border-gray-200">
+          <div className="px-6 py-4 border-b border-gray-200 flex items-center gap-3">
+            <div className="w-8 h-8 bg-orange-100 rounded-lg flex items-center justify-center">
+              <svg className="w-4 h-4 text-orange-600" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zm0 5a1 1 0 011-1h6a1 1 0 010 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h6a1 1 0 010 2H4a1 1 0 01-1-1z" clipRule="evenodd" />
+              </svg>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Client Secret</label>
-              <input
-                type="password"
-                value={procore.client_secret}
-                onChange={(e) => setProcore({ ...procore, client_secret: e.target.value })}
-                disabled={!isAdmin}
-                placeholder="Procore OAuth Client Secret"
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 disabled:bg-gray-50 disabled:text-gray-400"
-              />
+              <h2 className="text-base font-semibold text-gray-900">Procore Integration</h2>
+              <p className="text-xs text-gray-500">Pull contracts from Procore projects for insurance logging</p>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Company ID</label>
-              <input
-                type="text"
-                value={procore.company_id}
-                onChange={(e) => setProcore({ ...procore, company_id: e.target.value })}
-                disabled={!isAdmin}
-                placeholder="e.g. 9539"
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 disabled:bg-gray-50 disabled:text-gray-400"
-              />
-            </div>
+            {procore.configured && (
+              <span className="ml-auto text-xs bg-green-100 text-green-700 px-2.5 py-1 rounded-full font-medium">Connected</span>
+            )}
           </div>
-          {procore.token_cached && (
-            <p className="text-xs text-green-600">
-              Access token cached{procore.token_expiry ? ` (expires ${new Date(procore.token_expiry).toLocaleString()})` : ''}. Tokens auto-refresh.
-            </p>
-          )}
-          {isAdmin && (
+          <form onSubmit={saveProcore} className="p-6 space-y-4">
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Client ID</label>
+                <input
+                  type="text"
+                  value={procore.client_id}
+                  onChange={(e) => setProcore({ ...procore, client_id: e.target.value })}
+                  placeholder="Procore OAuth Client ID"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Client Secret</label>
+                <input
+                  type="password"
+                  value={procore.client_secret}
+                  onChange={(e) => setProcore({ ...procore, client_secret: e.target.value })}
+                  placeholder="Procore OAuth Client Secret"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Company ID</label>
+                <input
+                  type="text"
+                  value={procore.company_id}
+                  onChange={(e) => setProcore({ ...procore, company_id: e.target.value })}
+                  placeholder="e.g. 9539"
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
+                />
+              </div>
+            </div>
+            {procore.token_cached && (
+              <p className="text-xs text-green-600">
+                Access token cached{procore.token_expiry ? ` (expires ${new Date(procore.token_expiry).toLocaleString()})` : ''}. Tokens auto-refresh.
+              </p>
+            )}
             <div className="flex items-center gap-3">
               <button
                 type="submit"
@@ -490,12 +482,12 @@ export default function SettingsPage() {
                 </span>
               )}
             </div>
-          )}
-          <p className="text-xs text-gray-400 mt-2">
-            Access tokens are auto-fetched using OAuth Client Credentials and cached until expiry.
-          </p>
-        </form>
-      </div>
+            <p className="text-xs text-gray-400 mt-2">
+              Access tokens are auto-fetched using OAuth Client Credentials and cached until expiry.
+            </p>
+          </form>
+        </div>
+      )}
     </div>
   )
 }

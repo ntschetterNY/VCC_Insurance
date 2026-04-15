@@ -16,13 +16,18 @@ interface ScheduleEntry {
   notes: string
 }
 
-const SCHEDULE_GROUPS = ['A', 'B', 'C', 'D']
+const SCHEDULE_GROUPS = ['A', 'B', 'C']
 
 const GROUP_COLORS: Record<string, string> = {
-  A: 'bg-blue-100 text-blue-800',
-  B: 'bg-purple-100 text-purple-800',
-  C: 'bg-amber-100 text-amber-800',
-  D: 'bg-gray-100 text-gray-700',
+  A: 'bg-green-100 text-green-800',
+  B: 'bg-yellow-100 text-yellow-800',
+  C: 'bg-red-100 text-red-800',
+}
+
+const SCHEDULE_LABELS: Record<string, string> = {
+  A: 'Schedule A',
+  B: 'Schedule B',
+  C: 'Schedule C',
 }
 
 const blank = (): Omit<ScheduleEntry, 'id'> => ({
@@ -264,11 +269,9 @@ export default function SchedulePage() {
                   <td className="px-5 py-3 text-center">
                     {e.schedule_type ? (
                       <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${
-                        e.schedule_type === 'A' ? 'bg-green-100 text-green-800' :
-                        e.schedule_type === 'B' ? 'bg-yellow-100 text-yellow-800' :
-                        'bg-red-100 text-red-800'
+                        GROUP_COLORS[e.schedule_type] ?? 'bg-gray-100 text-gray-700'
                       }`}>
-                        {e.schedule_type}
+                        {SCHEDULE_LABELS[e.schedule_type] ?? e.schedule_type}
                       </span>
                     ) : '—'}
                   </td>

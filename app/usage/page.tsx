@@ -56,23 +56,48 @@ function formatDateTime(d: string) {
 export default function UsagePage() {
   const [data, setData] = useState<UsageData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [days, setDays] = useState(30)
+  const [retryCount, setRetryCount] = useState(0)
 
   useEffect(() => {
     setLoading(true)
+    setError(null)
     fetch(`/api/usage?days=${days}`)
-      .then((r) => r.json())
-      .then((d) => setData(d))
-      .catch(() => {})
+      .then((r) => {
+        if (!r.ok) throw new Error(`Failed to load usage data (${r.status})`)
+        return r.json()
+      })
+      .then((d) => {
+        if (d && typeof d.total_calls === 'number') {
+          setData(d)
+        } else {
+          throw new Error('Invalid response from server')
+        }
+      })
+      .catch((err) => {
+        setData(null)
+        setError(err instanceof Error ? err.message : 'Failed to load usage data')
+      })
       .finally(() => setLoading(false))
-  }, [days])
+  }, [days, retryCount])
 
   if (loading) {
     return <div className="p-8 text-gray-500">Loading usage data...</div>
   }
 
   if (!data) {
-    return <div className="p-8 text-red-600">Failed to load usage data.</div>
+    return (
+      <div className="p-8">
+        <p className="text-red-600 mb-3">{error || 'Failed to load usage data.'}</p>
+        <button
+          onClick={() => setRetryCount((c) => c + 1)}
+          className="text-sm text-blue-600 hover:text-blue-800 underline"
+        >
+          Retry
+        </button>
+      </div>
+    )
   }
 
   const sortedDays = Object.entries(data.by_day).sort(([a], [b]) => a.localeCompare(b))

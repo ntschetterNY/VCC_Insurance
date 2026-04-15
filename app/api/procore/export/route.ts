@@ -45,11 +45,38 @@ export async function POST(req: NextRequest) {
     // Get submission info for naming
     const { data: submission } = await supabase
       .from('submissions')
-      .select('*, subcontractors ( name, trade )')
+      .select('*, subcontractors ( name, trade, tier )')
       .eq('id', submission_id)
       .single()
 
-    const subName = (submission?.subcontractors as Record<string, unknown>)?.name ?? 'Unknown'
+    const sub = submission?.subcontractors as Record<string, unknown> | null
+    const subName = (sub?.name as string) ?? 'Unknown'
+    const subTrade = (sub?.trade as string) ?? ''
+    const subTier = (sub?.tier as string) ?? ''
+
+    // Get AI analysis for metadata
+    const { data: analysis } = await supabase
+      .from('ai_analysis')
+      .select('limits_met, issues, checklist')
+      .eq('submission_id', submission_id)
+      .single()
+
+    // Get schedule info
+    const { data: scheduleData } = subTrade
+      ? await supabase.from('schedule').select('schedule_type, deductible, gl_per_occurrence, gl_aggregate, workers_comp').eq('trade', subTrade).single()
+      : { data: null }
+
+    const DOC_TYPE_LABELS: Record<string, string> = {
+      accord25: 'ACORD 25 Certificate',
+      accord28: 'ACORD 28 Evidence of Property',
+      policy_gl: 'General Liability Policy',
+      policy_excess: 'Excess/Umbrella Policy',
+      policy_wc: 'Workers Compensation Policy',
+      policy_auto: 'Commercial Auto Policy',
+      endorsement: 'Endorsement',
+      contract: 'Subcontract Agreement',
+      other: 'Other Document',
+    }
 
     const exportResults: Array<{ filename: string; success: boolean; error?: string }> = []
 
@@ -71,13 +98,23 @@ export async function POST(req: NextRequest) {
       }
 
       const blob = new Blob([await fileData.arrayBuffer()], { type: 'application/pdf' })
+      const docLabel = DOC_TYPE_LABELS[doc.doc_type] ?? doc.doc_type
       const filename = `${subName}_${doc.doc_type}_${doc.filename}`
+
+      // Build a rich description
+      const descParts = [`Insurance document for ${subName}`, `Type: ${docLabel}`]
+      if (subTrade) descParts.push(`Trade: ${subTrade}`)
+      if (subTier) descParts.push(`Tier: ${subTier}`)
+      if (scheduleData?.schedule_type) descParts.push(`Schedule: ${scheduleData.schedule_type}`)
+      if (analysis?.limits_met != null) descParts.push(`Limits met: ${analysis.limits_met ? 'Yes' : 'No'}`)
+      const description = descParts.join(' | ')
 
       if (contract_id) {
         // Attach to commitment (subcontract)
         const formData = new FormData()
         formData.append('file', blob, filename)
         formData.append('attachment[name]', filename)
+        formData.append('attachment[description]', description)
 
         try {
           const uploadRes = await fetch(
@@ -144,7 +181,7 @@ export async function POST(req: NextRequest) {
           const uploadFormData = new FormData()
           uploadFormData.append('file[data]', blob, filename)
           uploadFormData.append('file[name]', filename)
-          uploadFormData.append('file[description]', `Insurance document for ${subName} - ${doc.doc_type}`)
+          uploadFormData.append('file[description]', description)
           if (folderId) {
             uploadFormData.append('file[folder_id]', folderId)
           }
