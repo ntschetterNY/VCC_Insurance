@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import StatusBadge from '@/components/StatusBadge'
 import Link from 'next/link'
@@ -129,6 +129,12 @@ export default function ReviewPage() {
   const [flagSeverity, setFlagSeverity] = useState('medium')
   const [flagSubmitting, setFlagSubmitting] = useState(false)
 
+  // Document upload
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [uploadDragOver, setUploadDragOver] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+
   const loadData = useCallback(async () => {
     try {
       const [subRes, meRes] = await Promise.all([
@@ -251,6 +257,55 @@ export default function ReviewPage() {
       setDeleting(false)
     }
   }
+
+  // --- Document upload handlers ---
+  const handleUploadFiles = useCallback(async (files: FileList | File[]) => {
+    const pdfFiles = Array.from(files).filter(
+      (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
+    )
+    if (pdfFiles.length === 0) {
+      setUploadError('Please upload PDF files only.')
+      return
+    }
+    setUploadError('')
+    setUploading(true)
+    try {
+      const fd = new FormData()
+      for (const f of pdfFiles) {
+        fd.append('files', f)
+      }
+      const res = await fetch(`/api/submissions/${id}/documents`, {
+        method: 'POST',
+        body: fd,
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error || 'Upload failed')
+      }
+      await loadData()
+    } catch (err: unknown) {
+      setUploadError(err instanceof Error ? err.message : 'Upload failed')
+    } finally {
+      setUploading(false)
+    }
+  }, [id, loadData])
+
+  const handleUploadDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation(); setUploadDragOver(true)
+  }, [])
+  const handleUploadDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation(); setUploadDragOver(false)
+  }, [])
+  const handleUploadDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation(); setUploadDragOver(false)
+    if (e.dataTransfer.files.length > 0) handleUploadFiles(e.dataTransfer.files)
+  }, [handleUploadFiles])
+  const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      handleUploadFiles(e.target.files)
+      e.target.value = ''
+    }
+  }, [handleUploadFiles])
 
   if (loading) {
     return (
@@ -777,6 +832,54 @@ export default function ReviewPage() {
                 ))}
               </ul>
             )}
+
+            {/* Upload drop zone */}
+            <div className="mt-4">
+              <div
+                onDragOver={handleUploadDragOver}
+                onDragLeave={handleUploadDragLeave}
+                onDrop={handleUploadDrop}
+                onClick={() => fileInputRef.current?.click()}
+                className={`border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${
+                  uploadDragOver
+                    ? 'border-slate-500 bg-slate-50'
+                    : 'border-gray-300 hover:border-gray-400 bg-gray-50/50'
+                } ${uploading ? 'pointer-events-none opacity-60' : ''}`}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf"
+                  multiple
+                  onChange={handleFileInputChange}
+                  className="hidden"
+                />
+                {uploading ? (
+                  <div className="flex flex-col items-center gap-1.5">
+                    <svg className="w-6 h-6 text-gray-400 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    <p className="text-xs text-gray-500">Uploading & classifying...</p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center gap-1.5">
+                    <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                    </svg>
+                    <p className="text-xs font-medium text-gray-600">
+                      Drop PDFs here or click to browse
+                    </p>
+                    <p className="text-xs text-gray-400">
+                      Add more documents to this submission
+                    </p>
+                  </div>
+                )}
+              </div>
+              {uploadError && (
+                <p className="text-xs text-red-600 mt-2">{uploadError}</p>
+              )}
+            </div>
           </div>
 
           {/* Assign Reviewer */}
