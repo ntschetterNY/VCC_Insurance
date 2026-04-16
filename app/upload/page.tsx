@@ -7,10 +7,13 @@ import {
   getTradeOptions,
 } from '@/lib/scheduleClassification'
 import { convertPdfToMarkdown } from '@/lib/pdfExtractClient'
-
-// Files larger than this are converted to Markdown in the browser before
-// upload, to stay under Vercel's 4.5 MB serverless body limit.
-const LARGE_PDF_THRESHOLD = 4 * 1024 * 1024 // 4 MB
+import {
+  LARGE_PDF_THRESHOLD,
+  isPdf,
+  isSupportedDoc,
+  formatSize,
+  extractErrorMessage,
+} from '@/lib/uploadHelpers'
 
 interface Subcontractor {
   id: number
@@ -63,24 +66,6 @@ interface QueuedFile {
   originalFile?: File
   status: 'ready' | 'converting' | 'error'
   errorMessage?: string
-}
-
-function isPdf(file: File): boolean {
-  return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
-}
-
-function isSupportedDoc(file: File): boolean {
-  if (isPdf(file)) return true
-  const n = file.name.toLowerCase()
-  if (n.endsWith('.md') || n.endsWith('.markdown') || n.endsWith('.txt')) return true
-  if (file.type === 'text/markdown' || file.type === 'text/plain') return true
-  return false
-}
-
-function formatSize(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
-  return `${bytes} B`
 }
 
 function formatCurrency(v: number) {
@@ -400,29 +385,6 @@ export default function UploadPage() {
     }
   }
 
-  // Extract a useful error message from a failed fetch response. Handles
-  // JSON error bodies, empty bodies (Vercel edge rejections), and HTML
-  // error pages (gateway timeouts) — in each case we surface the HTTP
-  // status so the user sees a concrete failure instead of "Upload failed".
-  async function extractErrorMessage(res: Response, fallback: string): Promise<string> {
-    const statusSuffix = `${res.status}${res.statusText ? ' ' + res.statusText : ''}`.trim()
-    const text = await res.text().catch(() => '')
-    if (text) {
-      try {
-        const body = JSON.parse(text)
-        if (body?.error) return body.error
-      } catch {
-        // not JSON — likely an HTML error page from the edge
-      }
-    }
-    if (res.status === 413) {
-      return `${fallback}: file is too large for the server (${statusSuffix}). Remove or split files over ~4 MB.`
-    }
-    if (res.status === 504) {
-      return `${fallback}: the server timed out processing the file (${statusSuffix}). Try again or upload fewer files at once.`
-    }
-    return `${fallback} (${statusSuffix})`
-  }
 
   return (
     <div className="p-8 max-w-2xl">
