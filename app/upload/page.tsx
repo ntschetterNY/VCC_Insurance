@@ -76,6 +76,7 @@ export default function UploadPage() {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const [dragOver, setDragOver] = useState(false)
+  const [progress, setProgress] = useState<{ current: number; total: number; label: string } | null>(null)
 
   // Procore
   const [procoreConfigured, setProcoreConfigured] = useState(false)
@@ -210,7 +211,13 @@ export default function UploadPage() {
   }, [])
 
   // -------------------------------------------------------------------------
-  // Submit — sends raw PDFs; backend does extraction + classification
+  // Submit — chunked upload flow:
+  //   1. POST /api/upload with metadata only (no files) → get submissionId
+  //   2. POST each file individually to /api/submissions/:id/documents
+  //      so no single request hits Vercel's 4.5 MB body limit
+  //   3. Fire POST /api/analysis/:id to run the deep Sonnet analysis
+  //   4. Navigate to /review/:id (the review page tolerates analysis
+  //      still running or failing — it has its own "Re-run Analysis" button)
   // -------------------------------------------------------------------------
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -226,55 +233,115 @@ export default function UploadPage() {
     }
 
     setSubmitting(true)
+    setProgress({ current: 0, total: files.length, label: 'Creating submission...' })
     try {
-      const fd = new FormData()
+      // ---------------------------------------------------------------
+      // Phase 1: init submission (metadata only, no files)
+      // ---------------------------------------------------------------
+      const initFd = new FormData()
 
       if (useExisting && existingSubId) {
-        fd.append('existing_sub_id', existingSubId)
+        initFd.append('existing_sub_id', existingSubId)
         const sub = subcontractors.find((s) => s.id === parseInt(existingSubId))
         if (sub) {
-          fd.append('name', sub.name)
-          fd.append('trade', sub.trade || '')
-          fd.append('tier', sub.tier || 'primary')
-          // Derive schedule from existing sub's trade
+          initFd.append('name', sub.name)
+          initFd.append('trade', sub.trade || '')
+          initFd.append('tier', sub.tier || 'primary')
           const match = classifyTrade(sub.trade)
-          if (match) fd.append('schedule_type', match.schedule.type)
+          if (match) initFd.append('schedule_type', match.schedule.type)
         }
       } else {
-        fd.append('name', name)
-        fd.append('trade', trade)
-        fd.append('tier', tier)
-        // Include the suggested schedule assignment
-        if (scheduleMatch) fd.append('schedule_type', scheduleMatch.schedule.type)
+        initFd.append('name', name)
+        initFd.append('trade', trade)
+        initFd.append('tier', tier)
+        if (scheduleMatch) initFd.append('schedule_type', scheduleMatch.schedule.type)
       }
 
-      if (procoreProjectId) fd.append('procore_project_id', procoreProjectId)
-      if (procoreContractId) fd.append('procore_contract_id', procoreContractId)
+      if (procoreProjectId) initFd.append('procore_project_id', procoreProjectId)
+      if (procoreContractId) initFd.append('procore_contract_id', procoreContractId)
 
-      // Append every PDF with optional manual type assignments
-      const docTypeMap: Record<string, string> = {}
-      for (const f of files) {
-        fd.append('files', f.file)
+      const initRes = await fetch('/api/upload', { method: 'POST', body: initFd })
+      if (!initRes.ok) {
+        throw new Error(await extractErrorMessage(initRes, 'Failed to create submission'))
+      }
+      const { submissionId } = await initRes.json()
+      if (!submissionId) throw new Error('Server did not return a submissionId')
+
+      // ---------------------------------------------------------------
+      // Phase 2: upload files one at a time. Fail-fast on the first
+      // error, but the already-uploaded files stay on the submission
+      // so the user can resume from the Review page.
+      // ---------------------------------------------------------------
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i]
+        setProgress({
+          current: i + 1,
+          total: files.length,
+          label: `Uploading ${f.file.name} (${i + 1} of ${files.length})...`,
+        })
+
+        const fileFd = new FormData()
+        fileFd.append('files', f.file)
         if (f.docType) {
-          docTypeMap[f.file.name] = f.docType
+          fileFd.append('doc_types', JSON.stringify({ [f.file.name]: f.docType }))
+        }
+
+        const fileRes = await fetch(`/api/submissions/${submissionId}/documents`, {
+          method: 'POST',
+          body: fileFd,
+        })
+        if (!fileRes.ok) {
+          throw new Error(
+            await extractErrorMessage(fileRes, `Failed to upload "${f.file.name}"`),
+          )
         }
       }
-      if (Object.keys(docTypeMap).length > 0) {
-        fd.append('doc_types', JSON.stringify(docTypeMap))
+
+      // ---------------------------------------------------------------
+      // Phase 3: trigger deep AI analysis. Fire-and-forget — if it
+      // fails or times out, the review page shows a "Re-run Analysis"
+      // button. We still wait for the request to be accepted so the
+      // server starts work before the client navigates away.
+      // ---------------------------------------------------------------
+      setProgress({ current: files.length, total: files.length, label: 'Running AI analysis...' })
+      try {
+        await fetch(`/api/analysis/${submissionId}`, { method: 'POST' })
+      } catch (analysisErr) {
+        // Non-fatal — the review page can re-run analysis on demand.
+        console.warn('Analysis trigger failed (will retry on review page):', analysisErr)
       }
 
-      const res = await fetch('/api/upload', { method: 'POST', body: fd })
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        throw new Error(body.error || 'Upload failed')
-      }
-      const data = await res.json()
-      router.push(`/review/${data.submissionId}`)
+      router.push(`/review/${submissionId}`)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Upload failed')
     } finally {
       setSubmitting(false)
+      setProgress(null)
     }
+  }
+
+  // Extract a useful error message from a failed fetch response. Handles
+  // JSON error bodies, empty bodies (Vercel edge rejections), and HTML
+  // error pages (gateway timeouts) — in each case we surface the HTTP
+  // status so the user sees a concrete failure instead of "Upload failed".
+  async function extractErrorMessage(res: Response, fallback: string): Promise<string> {
+    const statusSuffix = `${res.status}${res.statusText ? ' ' + res.statusText : ''}`.trim()
+    const text = await res.text().catch(() => '')
+    if (text) {
+      try {
+        const body = JSON.parse(text)
+        if (body?.error) return body.error
+      } catch {
+        // not JSON — likely an HTML error page from the edge
+      }
+    }
+    if (res.status === 413) {
+      return `${fallback}: file is too large for the server (${statusSuffix}). Remove or split files over ~4 MB.`
+    }
+    if (res.status === 504) {
+      return `${fallback}: the server timed out processing the file (${statusSuffix}). Try again or upload fewer files at once.`
+    }
+    return `${fallback} (${statusSuffix})`
   }
 
   return (
@@ -570,23 +637,34 @@ export default function UploadPage() {
           </div>
         )}
 
-        <div className="flex items-center gap-3 pt-2">
-          <button
-            type="submit"
-            disabled={submitting || files.length === 0}
-            className="bg-[#0f172a] text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-slate-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            {submitting ? 'Uploading & Analyzing...' : 'Submit for Review'}
-          </button>
-          <button
-            type="button"
-            onClick={() => router.push('/')}
-            className="text-sm text-gray-500 hover:text-gray-700 px-4 py-2.5"
-          >
-            Cancel
-          </button>
-          {submitting && (
-            <span className="text-xs text-gray-400">AI is extracting text, classifying, and analyzing your documents...</span>
+        <div className="space-y-2 pt-2">
+          <div className="flex items-center gap-3">
+            <button
+              type="submit"
+              disabled={submitting || files.length === 0}
+              className="bg-[#0f172a] text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-slate-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {submitting ? 'Uploading & Analyzing...' : 'Submit for Review'}
+            </button>
+            <button
+              type="button"
+              onClick={() => router.push('/')}
+              disabled={submitting}
+              className="text-sm text-gray-500 hover:text-gray-700 px-4 py-2.5 disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              Cancel
+            </button>
+          </div>
+          {submitting && progress && (
+            <div className="space-y-1">
+              <p className="text-xs text-gray-500">{progress.label}</p>
+              <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-slate-700 transition-all duration-200"
+                  style={{ width: `${(progress.current / Math.max(progress.total, 1)) * 100}%` }}
+                />
+              </div>
+            </div>
           )}
         </div>
       </form>
