@@ -269,7 +269,7 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
     const elapsedMs = Date.now() - startedAt
     console.log(`[Analysis] Anthropic call succeeded in ${elapsedMs}ms`)
 
-    const { error: upsertErr } = await supabase.from('ai_analysis').upsert({
+    const baseRow: Record<string, unknown> = {
       submission_id: submissionId,
       cg_numbers: analysis.cg_numbers,
       limits_found: analysis.limits_found,
@@ -277,16 +277,41 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
       issues: analysis.issues,
       flags: analysis.flags,
       checklist: analysis.checklist || {},
-      custom_checks: (analysis as unknown as Record<string, unknown>).custom_checks || {},
       raw_response: analysis,
-    }, { onConflict: 'submission_id' })
+    }
+    const fullRow = {
+      ...baseRow,
+      custom_checks: (analysis as unknown as Record<string, unknown>).custom_checks || {},
+    }
+
+    let { error: upsertErr } = await supabase
+      .from('ai_analysis')
+      .upsert(fullRow, { onConflict: 'submission_id' })
+
+    // If the DB hasn't had migration 003/006 applied, the custom_checks
+    // column won't exist. Retry without it so the analysis still saves; the
+    // reviewer just won't see the custom checks until the migration runs.
+    if (upsertErr && /custom_checks/i.test(upsertErr.message)) {
+      console.warn(
+        `[Analysis] ai_analysis.custom_checks column missing. ` +
+          `Apply supabase/migrations/006_ensure_post_002_schema.sql. ` +
+          `Retrying upsert without custom_checks.`,
+      )
+      const retry = await supabase
+        .from('ai_analysis')
+        .upsert(baseRow, { onConflict: 'submission_id' })
+      upsertErr = retry.error
+    }
 
     if (upsertErr) {
       console.error('[Analysis] Failed to persist ai_analysis row:', upsertErr)
+      const isMissingColumn = /column .* does not exist|Could not find the .* column/i.test(upsertErr.message)
       return NextResponse.json(
         {
           error: 'Analysis ran successfully but the result could not be saved to the database.',
-          hint: 'Check Supabase RLS policies on the ai_analysis table. The error message is in the debug field.',
+          hint: isMissingColumn
+            ? 'A column on ai_analysis is missing — apply supabase/migrations/006_ensure_post_002_schema.sql in the Supabase SQL Editor. The exact missing column is in the debug field.'
+            : 'Check Supabase RLS policies on the ai_analysis table. The error message is in the debug field.',
           debug: { submission_id: submissionId, db_error: upsertErr.message },
         },
         { status: 500 },
