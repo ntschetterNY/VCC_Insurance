@@ -90,6 +90,23 @@ export function coerceDocType(value: unknown): DocClassification {
   return isValidDocType(value) ? value : 'other'
 }
 
+/**
+ * Fallback mapping to the ORIGINAL migration-001 constraint
+ * (`CHECK (doc_type IN ('accord25', 'policy'))`) for the case where
+ * migration 002 was never applied to the Supabase database and the DB
+ * rejects the expanded doc_type values.
+ *
+ * We only use this when an INSERT fails with a CHECK-constraint error —
+ * it's a graceful degradation so uploads still succeed, at the cost of
+ * losing granularity (everything policy-ish collapses to 'policy'). A
+ * reviewer can then reclassify once migration 005 has been applied.
+ *
+ * See supabase/migrations/005_ensure_doc_type_constraint.sql for the fix.
+ */
+export function legacyDocTypeFallback(value: string): 'accord25' | 'policy' {
+  return value === 'accord25' || value === 'accord28' ? 'accord25' : 'policy'
+}
+
 export interface ClassificationResult {
   doc_type: DocClassification
   confidence: number

@@ -3,4 +3,4 @@
  * that Vercel has picked up the latest deploy. The value renders in the
  * bottom of the sidebar (see components/NavBar.tsx).
  */
-export const APP_VERSION = '0.01'
+export const APP_VERSION = '0.02'

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
-import { classifyDocument, analyzeAccord25, getAndClearUsageBuffer, coerceDocType } from '@/lib/ai'
+import { classifyDocument, analyzeAccord25, getAndClearUsageBuffer, coerceDocType, legacyDocTypeFallback } from '@/lib/ai'
 import { sanitizeString, generateFileHash } from '@/lib/security'
 import { classifyTrade } from '@/lib/scheduleClassification'
 import pdfParse from 'pdf-parse'
@@ -168,14 +168,31 @@ export async function POST(request: NextRequest) {
       // so any future CHECK-constraint violation is immediately diagnosable
       // from Vercel function logs.
       console.log(`[Upload] Inserting "${file.name}" with doc_type="${docType}"`)
-      const { error: docInsertError } = await supabase.from('documents').insert({
+      const docRow = {
         submission_id: submissionId,
         doc_type: docType,
         filename: file.name,
         storage_path: storagePath,
         extracted_text: text || null,
         processed_at: new Date().toISOString(),
-      })
+      }
+      let { error: docInsertError } = await supabase.from('documents').insert(docRow)
+
+      // If the DB's doc_type CHECK constraint hasn't been upgraded (i.e.
+      // migration 005/002 wasn't applied), retry with the legacy-compatible
+      // value so the upload still succeeds. The reviewer can reclassify once
+      // the migration is applied.
+      if (docInsertError && /documents_doc_type_check/i.test(docInsertError.message)) {
+        const fallback = legacyDocTypeFallback(docType)
+        console.warn(
+          `[Upload] documents_doc_type_check rejected "${docType}" for "${file.name}". ` +
+            `The DB is running an old schema — apply supabase/migrations/005_ensure_doc_type_constraint.sql. ` +
+            `Retrying with legacy-compatible doc_type="${fallback}".`,
+        )
+        const retry = await supabase.from('documents').insert({ ...docRow, doc_type: fallback })
+        docInsertError = retry.error
+      }
+
       if (docInsertError) {
         console.error(`[Upload] Document insert failed for "${file.name}":`, docInsertError)
         throw new Error(`Failed to save document record for "${file.name}": ${docInsertError.message}`)
