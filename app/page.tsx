@@ -13,6 +13,50 @@ interface Submission {
   uploaded_at: string
 }
 
+interface ProjectRollup {
+  id: number
+  name: string
+  procore_project_id: string | null
+  address: string | null
+  total: number
+  approved: number
+  pending: number
+  rejected: number
+  expiring: number
+  expired: number
+  primary: number
+  second_tier: number
+  health: 'good' | 'warning' | 'critical'
+}
+
+interface UpcomingExpiration {
+  submission_id: number
+  sub_name: string
+  trade: string
+  tier: string
+  project_id: number | null
+  project_name: string | null
+  policy_type: 'gl' | 'wc' | 'auto' | 'umbrella'
+  expires_on: string
+  days_until: number
+  status: 'expired' | 'critical' | 'warning' | 'ok'
+}
+
+interface Summary {
+  totals: {
+    total: number
+    approved: number
+    pending: number
+    rejected: number
+    compliance_rate: number
+    orphan_submissions: number
+    open_flags: number
+    active_projects: number
+  }
+  projects: ProjectRollup[]
+  upcoming_expirations: UpcomingExpiration[]
+}
+
 function formatDate(dateStr: string) {
   if (!dateStr) return '—'
   return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
@@ -21,6 +65,16 @@ function formatDate(dateStr: string) {
 function capitalize(str: string) {
   if (!str) return '—'
   return str.charAt(0).toUpperCase() + str.slice(1)
+}
+
+function policyLabel(type: string) {
+  switch (type) {
+    case 'gl': return 'General Liability'
+    case 'wc': return 'Workers Comp'
+    case 'auto': return 'Auto Liability'
+    case 'umbrella': return 'Umbrella'
+    default: return type.toUpperCase()
+  }
 }
 
 // CSS-only donut ring component
@@ -47,32 +101,75 @@ function DonutRing({ value, total, color }: { value: number; total: number; colo
   )
 }
 
+function ExpiryPill({ days, status }: { days: number; status: UpcomingExpiration['status'] }) {
+  const styles: Record<UpcomingExpiration['status'], string> = {
+    expired: 'bg-red-100 text-red-700 border-red-200',
+    critical: 'bg-orange-100 text-orange-700 border-orange-200',
+    warning: 'bg-yellow-100 text-yellow-700 border-yellow-200',
+    ok: 'bg-green-100 text-green-700 border-green-200',
+  }
+  const label = days < 0
+    ? `Expired ${Math.abs(days)}d`
+    : days === 0
+      ? 'Today'
+      : `in ${days}d`
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${styles[status]}`}>
+      {label}
+    </span>
+  )
+}
+
+function HealthDot({ health }: { health: ProjectRollup['health'] }) {
+  const colors = { good: 'bg-green-500', warning: 'bg-yellow-400', critical: 'bg-red-500' }
+  return <span className={`inline-block w-2.5 h-2.5 rounded-full ${colors[health]}`} aria-label={health} />
+}
+
 export default function DashboardPage() {
   const [submissions, setSubmissions] = useState<Submission[]>([])
+  const [summary, setSummary] = useState<Summary | null>(null)
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
+  const [projectFilter, setProjectFilter] = useState<number | 'all'>('all')
 
   useEffect(() => {
-    fetch('/api/submissions', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((data) => { if (Array.isArray(data)) setSubmissions(data) })
-      .catch(() => {})
-      .finally(() => setLoading(false))
+    Promise.all([
+      fetch('/api/submissions', { cache: 'no-store' }).then((r) => r.json()).catch(() => []),
+      fetch('/api/dashboard/summary', { cache: 'no-store' }).then((r) => r.json()).catch(() => null),
+    ]).then(([subs, sum]) => {
+      if (Array.isArray(subs)) setSubmissions(subs)
+      if (sum && !sum.error) setSummary(sum)
+      setLoading(false)
+    })
   }, [])
 
-  const total = submissions.length
-  const pending = submissions.filter((s) => s.status === 'pending' || s.status === 'reviewing').length
-  const approved = submissions.filter((s) => s.status === 'approved').length
-  const rejected = submissions.filter((s) => s.status === 'rejected').length
-  const complianceRate = total > 0 ? Math.round((approved / total) * 100) : 0
+  const totals = summary?.totals ?? {
+    total: submissions.length,
+    approved: submissions.filter((s) => s.status === 'approved').length,
+    pending: submissions.filter((s) => s.status === 'pending' || s.status === 'reviewing').length,
+    rejected: submissions.filter((s) => s.status === 'rejected').length,
+    compliance_rate: 0,
+    orphan_submissions: 0,
+    open_flags: 0,
+    active_projects: 0,
+  }
 
-  const filtered = filter === 'all' ? submissions : submissions.filter((s) => s.status === filter || (filter === 'pending' && s.status === 'reviewing'))
+  const filtered = submissions.filter((s) => {
+    const statusMatch = filter === 'all' || s.status === filter || (filter === 'pending' && s.status === 'reviewing')
+    return statusMatch
+  })
+
+  const projects = summary?.projects ?? []
+  const upcoming = summary?.upcoming_expirations ?? []
+  const upcomingFiltered = projectFilter === 'all'
+    ? upcoming
+    : upcoming.filter((u) => u.project_id === projectFilter)
 
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Hero header */}
       <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white px-8 py-10">
-        <div className="max-w-5xl">
+        <div className="max-w-6xl">
           <div className="flex items-center gap-3 mb-3">
             <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center">
               <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -86,18 +183,26 @@ export default function DashboardPage() {
           </div>
 
           {/* Quick metric strip */}
-          <div className="flex gap-6 mt-6 text-sm">
+          <div className="flex flex-wrap gap-3 mt-6 text-sm">
             <div className="bg-white/10 rounded-xl px-5 py-3">
               <p className="text-slate-400 text-xs font-medium uppercase tracking-wide">Total Submissions</p>
-              <p className="text-3xl font-bold mt-0.5">{total}</p>
+              <p className="text-3xl font-bold mt-0.5">{totals.total}</p>
             </div>
             <div className="bg-white/10 rounded-xl px-5 py-3">
               <p className="text-slate-400 text-xs font-medium uppercase tracking-wide">Compliance Rate</p>
-              <p className="text-3xl font-bold mt-0.5 text-emerald-400">{complianceRate}%</p>
+              <p className="text-3xl font-bold mt-0.5 text-emerald-400">{totals.compliance_rate}%</p>
+            </div>
+            <div className="bg-white/10 rounded-xl px-5 py-3">
+              <p className="text-slate-400 text-xs font-medium uppercase tracking-wide">Active Projects</p>
+              <p className="text-3xl font-bold mt-0.5 text-sky-300">{totals.active_projects}</p>
             </div>
             <div className="bg-white/10 rounded-xl px-5 py-3">
               <p className="text-slate-400 text-xs font-medium uppercase tracking-wide">Pending Review</p>
-              <p className="text-3xl font-bold mt-0.5 text-yellow-400">{pending}</p>
+              <p className="text-3xl font-bold mt-0.5 text-yellow-400">{totals.pending}</p>
+            </div>
+            <div className="bg-white/10 rounded-xl px-5 py-3">
+              <p className="text-slate-400 text-xs font-medium uppercase tracking-wide">Open Flags</p>
+              <p className="text-3xl font-bold mt-0.5 text-orange-400">{totals.open_flags}</p>
             </div>
             <div className="ml-auto flex items-center">
               <Link
@@ -111,19 +216,19 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="px-8 py-8 max-w-5xl">
-        {/* Visual stats row */}
-        <div className="grid grid-cols-3 gap-5 mb-8">
+      <div className="px-8 py-8 max-w-6xl space-y-8">
+        {/* Top row: breakdown + upcoming expirations */}
+        <div className="grid grid-cols-3 gap-5">
           {/* Approval breakdown */}
-          <div className="bg-white rounded-2xl border border-gray-200 p-5 col-span-2">
+          <div className="bg-white rounded-2xl border border-gray-200 p-5">
             <h2 className="text-sm font-semibold text-gray-700 mb-4">Submission Breakdown</h2>
-            <div className="flex items-center gap-8">
-              <DonutRing value={approved} total={total} color="#22c55e" />
+            <div className="flex items-center gap-6">
+              <DonutRing value={totals.approved} total={totals.total} color="#22c55e" />
               <div className="flex-1 space-y-3">
                 {[
-                  { label: 'Approved', value: approved, color: 'bg-green-500' },
-                  { label: 'Pending / Reviewing', value: pending, color: 'bg-yellow-400' },
-                  { label: 'Rejected', value: rejected, color: 'bg-red-500' },
+                  { label: 'Approved', value: totals.approved, color: 'bg-green-500' },
+                  { label: 'Pending', value: totals.pending, color: 'bg-yellow-400' },
+                  { label: 'Rejected', value: totals.rejected, color: 'bg-red-500' },
                 ].map(({ label, value, color }) => (
                   <div key={label}>
                     <div className="flex justify-between text-xs text-gray-600 mb-1">
@@ -133,7 +238,7 @@ export default function DashboardPage() {
                     <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
                       <div
                         className={`h-full ${color} rounded-full transition-all duration-700`}
-                        style={{ width: total > 0 ? `${(value / total) * 100}%` : '0%' }}
+                        style={{ width: totals.total > 0 ? `${(value / totals.total) * 100}%` : '0%' }}
                       />
                     </div>
                   </div>
@@ -142,29 +247,136 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Feature highlights — marketing callout */}
-          <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-2xl p-5 text-white flex flex-col justify-between">
-            <div>
-              <p className="text-xs text-slate-400 font-medium uppercase tracking-wide mb-3">Platform Features</p>
-              <ul className="space-y-2.5 text-sm">
-                {[
-                  'AI-powered compliance check',
-                  'Procore project sync',
-                  'Client-side PDF parsing',
-                  'Role-based access control',
-                  'Instant download & review',
-                ].map((f) => (
-                  <li key={f} className="flex items-center gap-2">
-                    <span className="w-4 h-4 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-xs">✓</span>
-                    <span className="text-slate-300">{f}</span>
-                  </li>
+          {/* Upcoming expirations — takes 2 columns */}
+          <div className="bg-white rounded-2xl border border-gray-200 col-span-2">
+            <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-semibold text-gray-700">Upcoming Expirations</h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {upcomingFiltered.length} policies expiring in the next 60 days
+                </p>
+              </div>
+              <select
+                value={projectFilter === 'all' ? 'all' : String(projectFilter)}
+                onChange={(e) => setProjectFilter(e.target.value === 'all' ? 'all' : parseInt(e.target.value))}
+                className="text-xs border border-gray-300 rounded-lg px-2 py-1.5"
+              >
+                <option value="all">All Projects</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
                 ))}
-              </ul>
+              </select>
             </div>
-            <Link href="/upload" className="mt-4 text-xs text-emerald-400 hover:text-emerald-300 font-medium">
-              Submit insurance docs →
+            <div className="max-h-80 overflow-y-auto">
+              {upcomingFiltered.length === 0 ? (
+                <div className="px-5 py-10 text-center text-sm text-gray-500">
+                  <svg className="w-10 h-10 mx-auto text-gray-300 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+                  </svg>
+                  All caught up — no upcoming expirations.
+                </div>
+              ) : (
+                <ul className="divide-y divide-gray-100">
+                  {upcomingFiltered.map((u, i) => (
+                    <li key={`${u.submission_id}-${u.policy_type}-${i}`} className="px-5 py-3 flex items-center gap-3 hover:bg-gray-50">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium text-gray-900 truncate">{u.sub_name}</p>
+                          {u.tier === 'second' && (
+                            <span className="text-[10px] uppercase tracking-wide bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-semibold">
+                              2nd Tier
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-500 truncate">
+                          {policyLabel(u.policy_type)} · {u.project_name ?? 'No project'} · {formatDate(u.expires_on)}
+                        </p>
+                      </div>
+                      <ExpiryPill days={u.days_until} status={u.status} />
+                      <Link
+                        href={`/review/${u.submission_id}#expiration`}
+                        className="text-xs text-blue-600 hover:text-blue-800 font-medium shrink-0"
+                      >
+                        Send Reminder →
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Projects overview */}
+        <div className="bg-white rounded-2xl border border-gray-200">
+          <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">Insurance Status by Project</h2>
+              <p className="text-xs text-gray-500 mt-0.5">
+                {totals.active_projects} active projects
+                {totals.orphan_submissions > 0 && ` · ${totals.orphan_submissions} submissions not linked to a project`}
+              </p>
+            </div>
+            <Link href="/projects" className="text-xs text-slate-600 hover:text-slate-800 font-medium">
+              Manage projects →
             </Link>
           </div>
+          {projects.length === 0 ? (
+            <div className="px-6 py-12 text-center text-gray-500 text-sm">
+              No projects yet. Projects appear here once submissions are linked to a Procore project.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
+                    <th className="px-6 py-3 text-left">Project</th>
+                    <th className="px-6 py-3 text-left">Subs</th>
+                    <th className="px-6 py-3 text-left">Approved</th>
+                    <th className="px-6 py-3 text-left">Pending</th>
+                    <th className="px-6 py-3 text-left">Rejected</th>
+                    <th className="px-6 py-3 text-left">Expiring</th>
+                    <th className="px-6 py-3 text-left">Tiers</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {projects.map((p) => (
+                    <tr key={p.id} className="hover:bg-gray-50">
+                      <td className="px-6 py-3">
+                        <div className="flex items-center gap-2">
+                          <HealthDot health={p.health} />
+                          <span className="font-medium text-gray-900">{p.name}</span>
+                        </div>
+                        {p.address && <p className="text-xs text-gray-500 ml-4.5">{p.address}</p>}
+                      </td>
+                      <td className="px-6 py-3 text-gray-700 font-medium">{p.total}</td>
+                      <td className="px-6 py-3 text-green-700">{p.approved}</td>
+                      <td className="px-6 py-3 text-yellow-700">{p.pending}</td>
+                      <td className="px-6 py-3 text-red-700">{p.rejected}</td>
+                      <td className="px-6 py-3">
+                        {p.expired > 0 && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700 mr-1">
+                            {p.expired} expired
+                          </span>
+                        )}
+                        {p.expiring > 0 && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700">
+                            {p.expiring} soon
+                          </span>
+                        )}
+                        {p.expired === 0 && p.expiring === 0 && (
+                          <span className="text-xs text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-6 py-3 text-xs text-gray-600">
+                        {p.primary} primary · {p.second_tier} 2nd
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
 
         {/* Submissions Table */}

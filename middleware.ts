@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { SECURITY_HEADERS } from '@/lib/security'
 
-const PUBLIC_PATHS = ['/login', '/reset-password', '/api/auth/login', '/api/auth/callback', '/api/auth/update-password', '/api/auth/debug', '/api/auth/setup', '/api/auth/force-admin', '/api/health']
+const PUBLIC_PATHS = ['/login', '/register', '/reset-password', '/api/auth/login', '/api/auth/register', '/api/auth/callback', '/api/auth/update-password', '/api/auth/debug', '/api/auth/setup', '/api/auth/force-admin', '/api/health']
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl

@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
     const adminClient = createSupabaseAdmin()
     const { data: profile } = await adminClient
       .from('users')
-      .select('name, role')
+      .select('name, role, status, must_change_password')
       .eq('id', user.id)
       .single()
 
@@ -36,6 +36,8 @@ export async function GET(req: NextRequest) {
       email: user.email ?? '',
       name: profile?.name ?? user.email?.split('@')[0] ?? '',
       role: profile?.role ?? 'reviewer',
+      status: profile?.status ?? 'active',
+      must_change_password: profile?.must_change_password ?? false,
     })
   } catch {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

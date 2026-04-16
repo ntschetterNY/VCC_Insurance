@@ -5,6 +5,21 @@ import { useParams, useRouter } from 'next/navigation'
 import StatusBadge from '@/components/StatusBadge'
 import Link from 'next/link'
 
+interface ReviewerFlag {
+  id: number
+  flag_type: string
+  description: string
+  severity: string
+  source?: string | null
+  check_status?: string | null
+  is_policy_issue?: boolean | null
+  needs_collection?: boolean | null
+  collection_item?: string | null
+  resolution?: string | null
+  checked_at?: string | null
+  created_at: string
+}
+
 interface SubmissionDetail {
   id: number
   status: string
@@ -18,6 +33,13 @@ interface SubmissionDetail {
   assigned_user_name: string | null
   procore_project_id: string | null
   procore_contract_id: string | null
+  project_id: number | null
+  subcontractor_email: string | null
+  gl_expiration: string | null
+  wc_expiration: string | null
+  auto_expiration: string | null
+  umbrella_expiration: string | null
+  projects: { id: number; name: string; procore_project_id: string | null } | null
   documents: {
     id: number
     doc_type: string
@@ -34,13 +56,7 @@ interface SubmissionDetail {
     custom_checks?: Record<string, string | null>
     created_at: string
   } | null
-  reviewer_flags: {
-    id: number
-    flag_type: string
-    description: string
-    severity: string
-    created_at: string
-  }[]
+  reviewer_flags: ReviewerFlag[]
   schedule: {
     trade: string
     schedule_type: string | null
@@ -242,6 +258,7 @@ export default function ReviewPage() {
           flag_type: flagType,
           description: flagDesc,
           severity: flagSeverity,
+          source: 'manual',
         }),
       })
       setFlagType('')
@@ -251,6 +268,25 @@ export default function ReviewPage() {
     } finally {
       setFlagSubmitting(false)
     }
+  }
+
+  async function importAiFlags(aiFlags: string[]) {
+    // Create reviewer_flags from AI-generated flag strings so they can be
+    // triaged through the check workflow.
+    for (const description of aiFlags) {
+      await fetch('/api/flags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          submission_id: parseInt(id),
+          flag_type: 'AI Analysis',
+          description,
+          severity: 'medium',
+          source: 'ai',
+        }),
+      })
+    }
+    await loadData()
   }
 
   async function updateDocType(docId: number, newType: string) {
@@ -794,23 +830,41 @@ export default function ReviewPage() {
 
           {/* Reviewer Flags */}
           <div className="bg-white rounded-xl border border-gray-200">
-            <div className="px-6 py-4 border-b border-gray-200">
-              <h2 className="text-base font-semibold text-gray-900">Reviewer Flags</h2>
+            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-semibold text-gray-900">Reviewer Flags</h2>
+                <p className="text-xs text-gray-500 mt-0.5">Review each flag to decide if it&rsquo;s a real policy issue and whether to collect documents.</p>
+              </div>
+              {data.ai_analysis?.flags && data.ai_analysis.flags.length > 0 && (
+                <button
+                  onClick={() => importAiFlags(data.ai_analysis!.flags)}
+                  className="text-xs border border-slate-200 hover:bg-slate-50 rounded-md px-3 py-1.5 font-medium text-slate-700"
+                >
+                  Import {data.ai_analysis.flags.length} AI flag(s)
+                </button>
+              )}
             </div>
             <div className="p-6 space-y-4">
               {data.reviewer_flags.length > 0 && (
-                <div className="space-y-2 mb-4">
+                <div className="space-y-3 mb-4">
                   {data.reviewer_flags.map((f) => (
-                    <div key={f.id} className="border border-gray-200 rounded-lg px-4 py-3">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-sm font-medium text-gray-900">{f.flag_type}</span>
-                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${severityColors[f.severity] ?? 'bg-gray-100 text-gray-700'}`}>
-                          {f.severity}
-                        </span>
-                        <span className="text-xs text-gray-400 ml-auto">{formatDate(f.created_at)}</span>
-                      </div>
-                      <p className="text-sm text-gray-600">{f.description}</p>
-                    </div>
+                    <FlagReviewCard
+                      key={f.id}
+                      flag={f}
+                      onUpdate={async (patch) => {
+                        await fetch(`/api/flags/${f.id}`, {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify(patch),
+                        })
+                        await loadData()
+                      }}
+                      onDelete={async () => {
+                        if (!confirm('Delete this flag?')) return
+                        await fetch(`/api/flags/${f.id}`, { method: 'DELETE' })
+                        await loadData()
+                      }}
+                    />
                   ))}
                 </div>
               )}
@@ -851,6 +905,30 @@ export default function ReviewPage() {
                 </button>
               </form>
             </div>
+          </div>
+
+          {/* Policy Expirations + Email Reminder */}
+          <div id="expiration" className="bg-white rounded-xl border border-gray-200">
+            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-semibold text-gray-900">Policy Expirations & Email Reminders</h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Set expiration dates and generate an email to the subcontractor
+                  {data.tier === 'second' && ' (second-tier)'}.
+                </p>
+              </div>
+            </div>
+            <ExpirationEmailPanel
+              submission={data}
+              onSave={async (patch) => {
+                await fetch(`/api/submissions/${id}`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(patch),
+                })
+                await loadData()
+              }}
+            />
           </div>
         </div>
 
@@ -1118,6 +1196,429 @@ export default function ReviewPage() {
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// FlagReviewCard — per-flag triage: check status, policy issue, needs
+// collection. Connects to PATCH /api/flags/:id.
+// ---------------------------------------------------------------------------
+const CHECK_STATUS_OPTIONS = [
+  { value: 'pending', label: 'Pending review', color: 'bg-yellow-100 text-yellow-700' },
+  { value: 'reviewed', label: 'Reviewed', color: 'bg-blue-100 text-blue-700' },
+  { value: 'not_an_issue', label: 'Not an issue', color: 'bg-slate-100 text-slate-700' },
+  { value: 'collected', label: 'Collected', color: 'bg-green-100 text-green-700' },
+  { value: 'waived', label: 'Waived', color: 'bg-purple-100 text-purple-700' },
+] as const
+
+function FlagReviewCard({
+  flag,
+  onUpdate,
+  onDelete,
+}: {
+  flag: ReviewerFlag
+  onUpdate: (patch: Record<string, unknown>) => Promise<void>
+  onDelete: () => Promise<void>
+}) {
+  const [expanded, setExpanded] = useState(flag.check_status === 'pending' || !flag.check_status)
+  const [collectionItem, setCollectionItem] = useState(flag.collection_item ?? '')
+  const [resolution, setResolution] = useState(flag.resolution ?? '')
+  const [saving, setSaving] = useState(false)
+
+  const status = flag.check_status ?? 'pending'
+  const statusStyle = CHECK_STATUS_OPTIONS.find((o) => o.value === status)?.color ?? 'bg-gray-100 text-gray-700'
+  const sevStyle = severityColors[flag.severity] ?? 'bg-gray-100 text-gray-700'
+
+  async function save(patch: Record<string, unknown>) {
+    setSaving(true)
+    try {
+      await onUpdate(patch)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="border border-gray-200 rounded-lg">
+      <div className="px-4 py-3 flex items-start gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap items-center gap-2 mb-1">
+            <span className="text-sm font-medium text-gray-900">{flag.flag_type}</span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold uppercase ${sevStyle}`}>
+              {flag.severity}
+            </span>
+            {flag.source === 'ai' && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 font-semibold uppercase">
+                AI
+              </span>
+            )}
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold uppercase ${statusStyle}`}>
+              {CHECK_STATUS_OPTIONS.find((o) => o.value === status)?.label ?? status}
+            </span>
+            {flag.is_policy_issue === true && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold uppercase">
+                Policy issue
+              </span>
+            )}
+            {flag.needs_collection && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 font-semibold uppercase">
+                Collect from sub
+              </span>
+            )}
+          </div>
+          <p className="text-sm text-gray-600">{flag.description}</p>
+          {flag.resolution && (
+            <p className="text-xs text-gray-500 mt-1"><span className="font-semibold text-gray-700">Resolution:</span> {flag.resolution}</p>
+          )}
+        </div>
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="text-xs text-slate-500 hover:text-slate-700 font-medium shrink-0"
+        >
+          {expanded ? 'Hide' : 'Check'}
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="px-4 pb-4 pt-2 border-t border-gray-100 bg-gray-50 space-y-3">
+          {/* Is this a real policy issue? */}
+          <div>
+            <p className="text-xs font-semibold text-gray-700 mb-1.5">Is this a real issue with the policy?</p>
+            <div className="flex flex-wrap gap-2 text-xs">
+              <button
+                onClick={() => save({ is_policy_issue: true, check_status: 'reviewed' })}
+                disabled={saving}
+                className={`px-2.5 py-1 rounded-md border font-medium transition-colors ${
+                  flag.is_policy_issue === true
+                    ? 'bg-red-600 border-red-600 text-white'
+                    : 'bg-white border-gray-300 text-gray-700 hover:border-red-300'
+                }`}
+              >
+                Yes — policy issue
+              </button>
+              <button
+                onClick={() => save({ is_policy_issue: false, check_status: 'not_an_issue', needs_collection: false })}
+                disabled={saving}
+                className={`px-2.5 py-1 rounded-md border font-medium transition-colors ${
+                  flag.is_policy_issue === false
+                    ? 'bg-slate-700 border-slate-700 text-white'
+                    : 'bg-white border-gray-300 text-gray-700 hover:border-slate-400'
+                }`}
+              >
+                No — not an issue
+              </button>
+              <button
+                onClick={() => save({ check_status: 'waived' })}
+                disabled={saving}
+                className={`px-2.5 py-1 rounded-md border font-medium transition-colors ${
+                  status === 'waived'
+                    ? 'bg-purple-600 border-purple-600 text-white'
+                    : 'bg-white border-gray-300 text-gray-700 hover:border-purple-300'
+                }`}
+              >
+                Waive
+              </button>
+            </div>
+          </div>
+
+          {/* Needs collection */}
+          {flag.is_policy_issue && (
+            <div>
+              <p className="text-xs font-semibold text-gray-700 mb-1.5">Do we need to collect anything from the subcontractor?</p>
+              <div className="flex items-center gap-2 mb-2">
+                <label className="inline-flex items-center gap-1.5 text-xs text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={flag.needs_collection ?? false}
+                    onChange={(e) => save({ needs_collection: e.target.checked })}
+                    className="rounded"
+                  />
+                  Needs collection from sub
+                </label>
+              </div>
+              {flag.needs_collection && (
+                <div className="flex flex-wrap gap-2 items-center">
+                  <input
+                    type="text"
+                    placeholder="What needs to be collected (e.g. renewed ACORD 25)"
+                    value={collectionItem}
+                    onChange={(e) => setCollectionItem(e.target.value)}
+                    onBlur={() => save({ collection_item: collectionItem })}
+                    className="flex-1 min-w-[220px] border border-gray-300 rounded-md px-2 py-1 text-xs"
+                  />
+                  <button
+                    onClick={() => save({ check_status: 'collected' })}
+                    disabled={saving}
+                    className="text-xs px-2.5 py-1 bg-green-600 text-white rounded-md font-medium hover:bg-green-700 disabled:opacity-50"
+                  >
+                    Mark collected
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Resolution notes */}
+          <div>
+            <p className="text-xs font-semibold text-gray-700 mb-1.5">Resolution notes</p>
+            <textarea
+              value={resolution}
+              onChange={(e) => setResolution(e.target.value)}
+              onBlur={() => save({ resolution })}
+              rows={2}
+              placeholder="What was done or what still needs to happen"
+              className="w-full border border-gray-300 rounded-md px-2 py-1 text-xs resize-none"
+            />
+          </div>
+
+          <div className="flex justify-between items-center pt-2 border-t border-gray-200">
+            <p className="text-[10px] text-gray-400">
+              Flag created {formatDate(flag.created_at)}
+              {flag.checked_at && ` · last reviewed ${formatDate(flag.checked_at)}`}
+            </p>
+            <button
+              onClick={onDelete}
+              className="text-xs text-red-500 hover:text-red-700 font-medium"
+            >
+              Delete flag
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ExpirationEmailPanel — set policy expiration dates and generate / send an
+// expiration-reminder email to the subcontractor (and note for 2nd-tier).
+// ---------------------------------------------------------------------------
+function ExpirationEmailPanel({
+  submission,
+  onSave,
+}: {
+  submission: SubmissionDetail
+  onSave: (patch: Record<string, unknown>) => Promise<void>
+}) {
+  const [gl, setGl] = useState(submission.gl_expiration ?? '')
+  const [wc, setWc] = useState(submission.wc_expiration ?? '')
+  const [auto, setAuto] = useState(submission.auto_expiration ?? '')
+  const [umb, setUmb] = useState(submission.umbrella_expiration ?? '')
+  const [email, setEmail] = useState(submission.subcontractor_email ?? '')
+  const [savingDates, setSavingDates] = useState(false)
+
+  const [draft, setDraft] = useState<{ subject: string; body: string } | null>(null)
+  const [to, setTo] = useState(submission.subcontractor_email ?? '')
+  const [cc, setCc] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
+
+  async function saveDates() {
+    setSavingDates(true)
+    try {
+      await onSave({
+        gl_expiration: gl || null,
+        wc_expiration: wc || null,
+        auto_expiration: auto || null,
+        umbrella_expiration: umb || null,
+        subcontractor_email: email || null,
+      })
+      setMsg({ kind: 'success', text: 'Saved expiration dates.' })
+    } catch {
+      setMsg({ kind: 'error', text: 'Failed to save dates' })
+    } finally {
+      setSavingDates(false)
+    }
+  }
+
+  async function generateDraft() {
+    setBusy(true)
+    setMsg(null)
+    try {
+      const res = await fetch('/api/emails/draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ submission_id: submission.id }),
+      })
+      const body = await res.json()
+      if (!res.ok) throw new Error(body.error ?? 'Failed to generate draft')
+      setDraft({ subject: body.subject, body: body.body })
+      if (body.to_email) setTo(body.to_email)
+    } catch (err) {
+      setMsg({ kind: 'error', text: err instanceof Error ? err.message : 'Failed to generate draft' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function send(method: 'procore' | 'mailto' | 'draft') {
+    if (!draft) return
+    if (method !== 'draft' && !to) {
+      setMsg({ kind: 'error', text: 'Enter a recipient email first.' })
+      return
+    }
+    setBusy(true)
+    setMsg(null)
+    try {
+      if (method === 'mailto') {
+        // Open default mail client, then log as sent
+        const href = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(draft.subject)}&body=${encodeURIComponent(draft.body)}${cc ? `&cc=${encodeURIComponent(cc)}` : ''}`
+        window.open(href, '_blank')
+      }
+      const res = await fetch('/api/emails/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          submission_id: submission.id,
+          project_id: submission.project_id,
+          to_email: to,
+          cc_emails: cc,
+          subject: draft.subject,
+          body: draft.body,
+          delivery_method: method,
+          email_type: 'expiration',
+        }),
+      })
+      const body = await res.json()
+      if (!res.ok) throw new Error(body.error ?? 'Failed to send')
+      setMsg({
+        kind: 'success',
+        text: method === 'procore'
+          ? 'Sent via Procore Emails.'
+          : method === 'mailto'
+          ? 'Logged as sent. Your email client opened — hit send there.'
+          : 'Draft saved.',
+      })
+    } catch (err) {
+      setMsg({ kind: 'error', text: err instanceof Error ? err.message : 'Failed to send' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="p-6 space-y-5">
+      {/* Expiration dates */}
+      <div className="grid grid-cols-2 gap-4">
+        {[
+          { label: 'GL Expiration', value: gl, set: setGl },
+          { label: 'WC Expiration', value: wc, set: setWc },
+          { label: 'Auto Expiration', value: auto, set: setAuto },
+          { label: 'Umbrella Expiration', value: umb, set: setUmb },
+        ].map(({ label, value, set }) => (
+          <div key={label}>
+            <label className="block text-xs font-medium text-gray-700 mb-1">{label}</label>
+            <input
+              type="date" value={value} onChange={(e) => set(e.target.value)}
+              className="w-full border border-gray-300 rounded-md px-2 py-1.5 text-sm"
+            />
+          </div>
+        ))}
+        <div className="col-span-2">
+          <label className="block text-xs font-medium text-gray-700 mb-1">Subcontractor contact email</label>
+          <input
+            type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+            placeholder="contact@sub.com"
+            className="w-full border border-gray-300 rounded-md px-2 py-1.5 text-sm"
+          />
+        </div>
+      </div>
+      <button
+        onClick={saveDates}
+        disabled={savingDates}
+        className="bg-slate-100 text-slate-800 px-4 py-2 rounded-lg text-sm font-medium hover:bg-slate-200 disabled:opacity-50"
+      >
+        {savingDates ? 'Saving…' : 'Save expiration info'}
+      </button>
+
+      {/* Draft */}
+      <div className="border-t border-gray-200 pt-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-gray-900">Expiration Reminder Email</h3>
+          <button
+            onClick={generateDraft}
+            disabled={busy}
+            className="text-xs bg-slate-900 text-white px-3 py-1.5 rounded-md font-medium hover:bg-slate-700 disabled:opacity-50"
+          >
+            {busy ? 'Working…' : draft ? 'Regenerate draft' : 'Generate draft'}
+          </button>
+        </div>
+
+        {!draft ? (
+          <p className="text-xs text-gray-500">
+            Generate an email draft based on the expiration dates above. You can send it via Procore Emails, your default mail client, or save it as a draft.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">To</label>
+              <input
+                type="email" value={to} onChange={(e) => setTo(e.target.value)}
+                className="w-full border border-gray-300 rounded-md px-2 py-1.5 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Cc (comma-separated, optional)</label>
+              <input
+                type="text" value={cc} onChange={(e) => setCc(e.target.value)}
+                className="w-full border border-gray-300 rounded-md px-2 py-1.5 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Subject</label>
+              <input
+                type="text" value={draft.subject}
+                onChange={(e) => setDraft({ ...draft, subject: e.target.value })}
+                className="w-full border border-gray-300 rounded-md px-2 py-1.5 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Body</label>
+              <textarea
+                rows={12} value={draft.body}
+                onChange={(e) => setDraft({ ...draft, body: e.target.value })}
+                className="w-full border border-gray-300 rounded-md px-2 py-1.5 text-sm font-mono"
+              />
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => send('procore')}
+                disabled={busy || !submission.project_id}
+                title={!submission.project_id ? 'Link this submission to a project with a Procore project id first' : ''}
+                className="bg-orange-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-orange-700 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Send via Procore Emails
+              </button>
+              <button
+                onClick={() => send('mailto')}
+                disabled={busy}
+                className="bg-slate-900 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-slate-700 disabled:opacity-50"
+              >
+                Open in mail client
+              </button>
+              <button
+                onClick={() => send('draft')}
+                disabled={busy}
+                className="bg-slate-100 text-slate-800 px-4 py-2 rounded-md text-sm font-medium hover:bg-slate-200 disabled:opacity-50"
+              >
+                Save as draft
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {msg && (
+        <div className={`border rounded-md px-3 py-2 text-sm ${
+          msg.kind === 'success'
+            ? 'bg-green-50 border-green-200 text-green-700'
+            : 'bg-red-50 border-red-200 text-red-700'
+        }`}>
+          {msg.text}
+        </div>
+      )}
     </div>
   )
 }

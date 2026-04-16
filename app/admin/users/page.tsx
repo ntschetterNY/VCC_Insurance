@@ -7,6 +7,8 @@ interface User {
   email: string
   name: string
   role: string
+  status?: string
+  must_change_password?: boolean
   created_at: string
 }
 
@@ -21,9 +23,11 @@ export default function AdminUsersPage() {
   const [newName, setNewName] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [newRole, setNewRole] = useState('reviewer')
+  const [generatePassword, setGeneratePassword] = useState(true)
   const [formError, setFormError] = useState('')
   const [formSuccess, setFormSuccess] = useState('')
   const [formLoading, setFormLoading] = useState(false)
+  const [issuedCredential, setIssuedCredential] = useState<{ email: string; temp_password: string } | null>(null)
 
   // Edit state
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -61,27 +65,74 @@ export default function AdminUsersPage() {
     e.preventDefault()
     setFormError('')
     setFormSuccess('')
+    setIssuedCredential(null)
     setFormLoading(true)
     try {
+      const payload: Record<string, unknown> = {
+        email: newEmail, name: newName, role: newRole,
+      }
+      if (generatePassword) {
+        payload.generate_password = true
+      } else {
+        payload.password = newPassword
+        payload.must_change_password = true
+      }
+
       const res = await fetch('/api/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: newEmail, name: newName, password: newPassword, role: newRole }),
+        body: JSON.stringify(payload),
       })
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        throw new Error(body.error || 'Failed to create user')
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.error || 'Failed to create user')
+
+      if (body.temp_password) {
+        setIssuedCredential({ email: newEmail, temp_password: body.temp_password })
+        setFormSuccess(`${newName} created. They must set a new password on first login.`)
+      } else {
+        setFormSuccess(`${newName} (${newEmail}) created. They must change this password on first login.`)
       }
-      setFormSuccess(`${newName} (${newEmail}) created successfully.`)
-      setNewEmail(''); setNewName(''); setNewPassword(''); setNewRole('reviewer')
+      setNewEmail(''); setNewName(''); setNewPassword(''); setNewRole('reviewer'); setGeneratePassword(true)
       setShowAddForm(false)
       await loadUsers()
-      setTimeout(() => setFormSuccess(''), 5000)
     } catch (err: unknown) {
       setFormError(err instanceof Error ? err.message : 'Failed')
     } finally {
       setFormLoading(false)
     }
+  }
+
+  async function quickRoleChange(u: User, newRole: 'admin' | 'reviewer') {
+    if (!confirm(`Change ${u.name}'s role to ${newRole}?`)) return
+    const res = await fetch(`/api/users/${u.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: newRole }),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      alert(body.error || 'Failed to update role')
+      return
+    }
+    await loadUsers()
+  }
+
+  async function resendInvite(u: User) {
+    // Reissues a temporary password and forces password-change on next login
+    if (!confirm(`Issue a new temporary password for ${u.name}?`)) return
+    const tempPassword = `Tmp-${Math.random().toString(36).slice(2, 10)}Aa!`
+    const res = await fetch(`/api/users/${u.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: tempPassword, must_change_password: true }),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      alert(body.error || 'Failed to reset password')
+      return
+    }
+    setIssuedCredential({ email: u.email, temp_password: tempPassword })
+    await loadUsers()
   }
 
   async function deleteUser(id: string, name: string) {
@@ -169,6 +220,25 @@ export default function AdminUsersPage() {
         </div>
       )}
 
+      {issuedCredential && (
+        <div className="bg-slate-900 text-white rounded-xl px-5 py-4 mb-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-slate-400 font-semibold">Temporary credential issued</p>
+              <p className="text-sm mt-1">
+                <span className="font-mono bg-slate-800 px-2 py-0.5 rounded">{issuedCredential.email}</span>
+                <span className="mx-2">/</span>
+                <span className="font-mono bg-slate-800 px-2 py-0.5 rounded">{issuedCredential.temp_password}</span>
+              </p>
+              <p className="text-xs text-slate-400 mt-2">Share this password securely. The user will be forced to change it on first login.</p>
+            </div>
+            <button onClick={() => setIssuedCredential(null)} className="text-slate-400 hover:text-white text-sm">
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Add User Form */}
       {showAddForm && (
         <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
@@ -192,14 +262,6 @@ export default function AdminUsersPage() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-                <input
-                  type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)}
-                  required minLength={8} placeholder="Min 8 characters"
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
-                />
-              </div>
-              <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
                 <select
                   value={newRole} onChange={(e) => setNewRole(e.target.value)}
@@ -208,6 +270,27 @@ export default function AdminUsersPage() {
                   <option value="reviewer">Reviewer</option>
                   <option value="admin">Admin</option>
                 </select>
+              </div>
+              <div className="col-span-2 space-y-3">
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox" checked={generatePassword}
+                    onChange={(e) => setGeneratePassword(e.target.checked)}
+                    className="rounded"
+                  />
+                  Generate a temporary password (user will set their own on first login)
+                </label>
+                {!generatePassword && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Temporary password</label>
+                    <input
+                      type="text" value={newPassword} onChange={(e) => setNewPassword(e.target.value)}
+                      required={!generatePassword} minLength={8}
+                      placeholder="Min 8 characters — user will change this on first login"
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-slate-500"
+                    />
+                  </div>
+                )}
               </div>
             </div>
             {formError && (
@@ -307,7 +390,14 @@ export default function AdminUsersPage() {
                       {u.name.charAt(0).toUpperCase()}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold text-gray-900">{u.name}</p>
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-semibold text-gray-900">{u.name}</p>
+                        {u.must_change_password && (
+                          <span className="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-semibold">
+                            Password reset required
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs text-gray-500">{u.email}</p>
                     </div>
                     <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${
@@ -315,10 +405,30 @@ export default function AdminUsersPage() {
                     }`}>
                       {u.role}
                     </span>
-                    <p className="text-xs text-gray-400 w-28 text-right">
+                    <p className="text-xs text-gray-400 w-24 text-right">
                       {u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}
                     </p>
-                    <div className="flex gap-2 ml-2">
+                    <div className="flex gap-2 ml-2 items-center">
+                      {u.id !== currentUser?.id && (
+                        u.role === 'admin' ? (
+                          <button
+                            onClick={() => quickRoleChange(u, 'reviewer')}
+                            className="text-xs text-slate-500 hover:text-slate-700 font-medium"
+                            title="Demote to reviewer"
+                          >Demote</button>
+                        ) : (
+                          <button
+                            onClick={() => quickRoleChange(u, 'admin')}
+                            className="text-xs text-purple-600 hover:text-purple-800 font-medium"
+                            title="Promote to admin"
+                          >Promote</button>
+                        )
+                      )}
+                      <button
+                        onClick={() => resendInvite(u)}
+                        className="text-xs text-amber-600 hover:text-amber-800 font-medium"
+                        title="Issue a new temporary password"
+                      >Reset Password</button>
                       <button
                         onClick={() => { setEditingId(u.id); setEditName(u.name); setEditRole(u.role); setEditPassword('') }}
                         className="text-xs text-slate-500 hover:text-slate-700 font-medium"

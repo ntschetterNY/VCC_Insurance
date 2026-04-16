@@ -2,6 +2,7 @@
 
 import { useState, FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { APP_VERSION } from '@/lib/version'
 
 type LoginStep = 'credentials' | 'mfa'
@@ -37,7 +38,13 @@ export default function LoginPage() {
         setFactorId(body.factor_id)
         setStep('mfa')
       } else {
-        router.push('/')
+        // After auth, check if the user must change their password
+        const meRes = await fetch('/api/auth/me').then((r) => r.ok ? r.json() : null)
+        if (meRes?.must_change_password) {
+          router.push('/force-password-change')
+        } else {
+          router.push('/')
+        }
         router.refresh()
       }
     } catch (err: unknown) {
@@ -61,7 +68,12 @@ export default function LoginPage() {
 
       if (!res.ok) throw new Error(body.error || 'Verification failed')
 
-      router.push('/')
+      const meRes = await fetch('/api/auth/me').then((r) => r.ok ? r.json() : null)
+      if (meRes?.must_change_password) {
+        router.push('/force-password-change')
+      } else {
+        router.push('/')
+      }
       router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Verification failed')
@@ -184,7 +196,7 @@ export default function LoginPage() {
           )}
 
           <p className="text-xs text-gray-400 mt-6 text-center">
-            Contact your administrator to create an account.
+            Need access? <Link href="/register" className="text-slate-700 hover:text-slate-900 font-medium">Request an account</Link>
           </p>
         </div>
 

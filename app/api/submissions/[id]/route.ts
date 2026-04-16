@@ -15,7 +15,8 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
       .from('submissions')
       .select(`
         *,
-        subcontractors ( name, trade, tier )
+        subcontractors ( name, trade, tier ),
+        projects ( id, name, procore_project_id )
       `)
       .eq('id', id)
       .single()
@@ -106,7 +107,17 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
   try {
     const supabase = await getDb()
     const id = parseInt(params.id)
-    const body = await req.json() as { status?: string; reviewer_notes?: string; assigned_to?: string | null }
+    const body = await req.json() as {
+      status?: string
+      reviewer_notes?: string
+      assigned_to?: string | null
+      project_id?: number | null
+      subcontractor_email?: string | null
+      gl_expiration?: string | null
+      wc_expiration?: string | null
+      auto_expiration?: string | null
+      umbrella_expiration?: string | null
+    }
 
     const updates: Record<string, unknown> = {}
     if (body.status) {
@@ -117,6 +128,12 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     }
     if (body.reviewer_notes !== undefined) updates.reviewer_notes = body.reviewer_notes
     if (body.assigned_to !== undefined) updates.assigned_to = body.assigned_to
+    if (body.project_id !== undefined) updates.project_id = body.project_id
+    if (body.subcontractor_email !== undefined) updates.subcontractor_email = body.subcontractor_email
+    if (body.gl_expiration !== undefined) updates.gl_expiration = body.gl_expiration || null
+    if (body.wc_expiration !== undefined) updates.wc_expiration = body.wc_expiration || null
+    if (body.auto_expiration !== undefined) updates.auto_expiration = body.auto_expiration || null
+    if (body.umbrella_expiration !== undefined) updates.umbrella_expiration = body.umbrella_expiration || null
 
     if (Object.keys(updates).length === 0) {
       return NextResponse.json({ error: 'Nothing to update' }, { status: 400 })
