@@ -261,10 +261,21 @@ export async function POST(request: NextRequest) {
         raw_response: analysis,
       }, { onConflict: 'submission_id' })
     } catch (aiError) {
-      console.error('AI analysis failed:', aiError)
+      // Log full diagnostic context — the actual error category will be
+      // shown to the user when they click "Re-run Analysis" via
+      // /api/analysis/[id], which has rich error categorization.
+      const e = aiError as { status?: number; error?: { type?: string; message?: string } }
+      console.error('[Upload] AI analysis failed during upload:', {
+        message: aiError instanceof Error ? aiError.message : String(aiError),
+        http_status: e.status,
+        provider_error_type: e.error?.type,
+        provider_error_message: e.error?.message,
+      })
       await supabase.from('ai_analysis').insert({
         submission_id: submissionId,
-        issues: ['AI analysis failed — please re-run manually'],
+        issues: [
+          'AI analysis failed during upload — click "Re-run Analysis" to see the detailed error.',
+        ],
       })
     }
 
