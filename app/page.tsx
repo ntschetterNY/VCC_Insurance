@@ -131,9 +131,11 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
   const [projectFilter, setProjectFilter] = useState<number | 'all'>('all')
+  const [syncing, setSyncing] = useState(false)
+  const [syncNotice, setSyncNotice] = useState<string | null>(null)
 
-  useEffect(() => {
-    Promise.all([
+  function loadData() {
+    return Promise.all([
       fetch('/api/submissions', { cache: 'no-store' }).then((r) => r.json()).catch(() => []),
       fetch('/api/dashboard/summary', { cache: 'no-store' }).then((r) => r.json()).catch(() => null),
     ]).then(([subs, sum]) => {
@@ -141,7 +143,28 @@ export default function DashboardPage() {
       if (sum && !sum.error) setSummary(sum)
       setLoading(false)
     })
-  }, [])
+  }
+
+  useEffect(() => { loadData() }, [])
+
+  async function syncProjectNames() {
+    setSyncing(true)
+    setSyncNotice(null)
+    try {
+      const res = await fetch('/api/projects/sync', { method: 'POST' })
+      const body = await res.json()
+      if (!res.ok) throw new Error(body.error ?? 'Sync failed')
+      setSyncNotice(
+        `Refreshed from Procore: ${body.updated} renamed, ${body.unchanged} already current` +
+        (body.missing_in_procore?.length ? ` (${body.missing_in_procore.length} not found in Procore)` : '')
+      )
+      await loadData()
+    } catch (err) {
+      setSyncNotice(err instanceof Error ? err.message : 'Sync failed')
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   const totals = summary?.totals ?? {
     total: submissions.length,
@@ -316,10 +339,23 @@ export default function DashboardPage() {
                 {totals.active_projects} active projects
                 {totals.orphan_submissions > 0 && ` · ${totals.orphan_submissions} submissions not linked to a project`}
               </p>
+              {syncNotice && (
+                <p className="text-xs text-slate-700 mt-1">{syncNotice}</p>
+              )}
             </div>
-            <Link href="/projects" className="text-xs text-slate-600 hover:text-slate-800 font-medium">
-              Manage projects →
-            </Link>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={syncProjectNames}
+                disabled={syncing}
+                className="text-xs text-slate-600 hover:text-slate-900 font-medium disabled:opacity-50"
+                title="Refresh project names from Procore"
+              >
+                {syncing ? 'Syncing…' : 'Sync from Procore ↻'}
+              </button>
+              <Link href="/projects" className="text-xs text-slate-600 hover:text-slate-800 font-medium">
+                Manage projects →
+              </Link>
+            </div>
           </div>
           {projects.length === 0 ? (
             <div className="px-6 py-12 text-center text-gray-500 text-sm">

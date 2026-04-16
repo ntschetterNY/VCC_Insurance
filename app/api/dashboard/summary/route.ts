@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { requireAuth } from '@/lib/auth'
 import { createSupabaseAdmin } from '@/lib/supabase'
+import { syncPlaceholderProjectNames } from '@/lib/procoreProjects'
 
 interface SubmissionRow {
   id: number
@@ -32,6 +33,15 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const admin = createSupabaseAdmin()
+
+  // Opportunistically replace migration-placeholder project names
+  // ("Procore Project {id}") with the real Procore friendly name. No-ops
+  // once every row has a real name or if Procore is not reachable.
+  try {
+    await syncPlaceholderProjectNames()
+  } catch {
+    /* non-fatal */
+  }
 
   const { data: projects } = await admin
     .from('projects')
