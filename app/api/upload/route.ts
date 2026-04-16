@@ -52,9 +52,10 @@ export async function POST(request: NextRequest) {
     if (!name) {
       return NextResponse.json({ error: 'Subcontractor name is required' }, { status: 400 })
     }
-    if (uploadedFiles.length === 0) {
-      return NextResponse.json({ error: 'At least one PDF document is required' }, { status: 400 })
-    }
+    // When called with zero files this endpoint runs in "init-only" mode:
+    // it creates the subcontractor + submission and returns submissionId so
+    // the client can chunk file uploads to /api/submissions/[id]/documents,
+    // bypassing the Vercel 4.5 MB request-body limit on the batch path.
 
     const supabase = await getDb()
 
@@ -100,8 +101,19 @@ export async function POST(request: NextRequest) {
     const submissionId = submission.id
 
     // ------------------------------------------------------------------
-    // Process each uploaded file: extract text → classify with Haiku →
-    // store in Supabase Storage + documents table
+    // Init-only mode: no files in this request. The client will chunk the
+    // per-file uploads to /api/submissions/[id]/documents and trigger the
+    // deep analysis separately via /api/analysis/[id].
+    // ------------------------------------------------------------------
+    if (uploadedFiles.length === 0) {
+      return NextResponse.json({ submissionId }, { status: 201 })
+    }
+
+    // ------------------------------------------------------------------
+    // Batch mode: process each uploaded file: extract text → classify with
+    // Haiku → store in Supabase Storage + documents table. Kept for
+    // backward compatibility and small-batch uploads that fit in one
+    // request.
     // ------------------------------------------------------------------
 
     // Fetch classification hints from memory to improve AI accuracy
