@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { Fragment, useState, useEffect } from 'react'
 import Link from 'next/link'
 import StatusBadge from '@/components/StatusBadge'
 
@@ -11,6 +11,9 @@ interface Submission {
   tier: string
   status: string
   uploaded_at: string
+  procore_project_id: string | null
+  procore_contract_id: string | null
+  project_id: number | null
 }
 
 interface ProjectRollup {
@@ -181,6 +184,49 @@ export default function DashboardPage() {
     const statusMatch = filter === 'all' || s.status === filter || (filter === 'pending' && s.status === 'reviewing')
     return statusMatch
   })
+
+  // Group 2nd-tier subs under the primary they're tied to. Primary + 2nd
+  // tier submissions that share a Procore commitment (procore_contract_id)
+  // belong together; if the commitment is missing we fall back to the
+  // Procore project id so a 2nd-tier sub still nests beneath a primary on
+  // the same project. Orphan 2nd-tier rows are kept at the top level so
+  // they're still visible.
+  const groupedSubmissions = (() => {
+    const primaries = filtered.filter((s) => s.tier !== 'second')
+    const seconds = filtered.filter((s) => s.tier === 'second')
+
+    const keyFor = (s: Submission): string | null =>
+      s.procore_contract_id
+        ? `c:${s.procore_contract_id}`
+        : s.procore_project_id
+        ? `p:${s.procore_project_id}`
+        : null
+
+    const childrenByKey = new Map<string, Submission[]>()
+    const orphanSeconds: Submission[] = []
+    const matchedIds = new Set<number>()
+
+    for (const sec of seconds) {
+      const k = keyFor(sec)
+      const hasPrimary = k != null && primaries.some((p) => keyFor(p) === k)
+      if (hasPrimary && k) {
+        const list = childrenByKey.get(k) ?? []
+        list.push(sec)
+        childrenByKey.set(k, list)
+        matchedIds.add(sec.id)
+      } else {
+        orphanSeconds.push(sec)
+      }
+    }
+
+    const rows: Array<{ sub: Submission; children: Submission[] }> = []
+    for (const p of primaries) {
+      const k = keyFor(p)
+      rows.push({ sub: p, children: k ? childrenByKey.get(k) ?? [] : [] })
+    }
+    for (const o of orphanSeconds) rows.push({ sub: o, children: [] })
+    return rows
+  })()
 
   const projects = summary?.projects ?? []
   const upcoming = summary?.upcoming_expirations ?? []
@@ -466,24 +512,61 @@ export default function DashboardPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {filtered.map((sub) => (
-                    <tr key={sub.id} className="hover:bg-gray-50 transition-colors group">
-                      <td className="px-6 py-4 font-medium text-gray-900">{sub.sub_name}</td>
-                      <td className="px-6 py-4 text-gray-600">{sub.trade || '—'}</td>
-                      <td className="px-6 py-4 text-gray-600">{capitalize(sub.tier)}</td>
-                      <td className="px-6 py-4">
-                        <StatusBadge status={sub.status} />
-                      </td>
-                      <td className="px-6 py-4 text-gray-500">{formatDate(sub.uploaded_at)}</td>
-                      <td className="px-6 py-4">
-                        <Link
-                          href={`/review/${sub.id}`}
-                          className="text-blue-600 hover:text-blue-800 font-medium group-hover:underline"
+                  {groupedSubmissions.map(({ sub, children }) => (
+                    <Fragment key={sub.id}>
+                      <tr className="hover:bg-gray-50 transition-colors group">
+                        <td className="px-6 py-4 font-medium text-gray-900">{sub.sub_name}</td>
+                        <td className="px-6 py-4 text-gray-600">{sub.trade || '—'}</td>
+                        <td className="px-6 py-4 text-gray-600">{capitalize(sub.tier)}</td>
+                        <td className="px-6 py-4">
+                          <StatusBadge status={sub.status} />
+                        </td>
+                        <td className="px-6 py-4 text-gray-500">{formatDate(sub.uploaded_at)}</td>
+                        <td className="px-6 py-4">
+                          <Link
+                            href={`/review/${sub.id}`}
+                            className="text-blue-600 hover:text-blue-800 font-medium group-hover:underline"
+                          >
+                            Review →
+                          </Link>
+                        </td>
+                      </tr>
+                      {children.map((child) => (
+                        <tr
+                          key={child.id}
+                          className="hover:bg-gray-50 transition-colors group bg-slate-50/40"
                         >
-                          Review →
-                        </Link>
-                      </td>
-                    </tr>
+                          <td className="px-6 py-3 font-medium text-gray-800">
+                            <div className="flex items-center gap-2 pl-6">
+                              <span
+                                className="text-slate-300 select-none"
+                                aria-hidden="true"
+                              >
+                                └
+                              </span>
+                              <span>{child.sub_name}</span>
+                              <span className="text-[10px] uppercase tracking-wide bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded font-semibold">
+                                2nd Tier
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-3 text-gray-600">{child.trade || '—'}</td>
+                          <td className="px-6 py-3 text-gray-600">{capitalize(child.tier)}</td>
+                          <td className="px-6 py-3">
+                            <StatusBadge status={child.status} />
+                          </td>
+                          <td className="px-6 py-3 text-gray-500">{formatDate(child.uploaded_at)}</td>
+                          <td className="px-6 py-3">
+                            <Link
+                              href={`/review/${child.id}`}
+                              className="text-blue-600 hover:text-blue-800 font-medium group-hover:underline"
+                            >
+                              Review →
+                            </Link>
+                          </td>
+                        </tr>
+                      ))}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>

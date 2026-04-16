@@ -167,6 +167,12 @@ export default function ReviewPage() {
   const [flagSeverity, setFlagSeverity] = useState('medium')
   const [flagSubmitting, setFlagSubmitting] = useState(false)
 
+  // Push to Procore Directory
+  const [pushingDirectory, setPushingDirectory] = useState(false)
+  const [directoryMessage, setDirectoryMessage] = useState<
+    { kind: 'success' | 'error'; text: string } | null
+  >(null)
+
   // Document upload
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [uploadDragOver, setUploadDragOver] = useState(false)
@@ -317,6 +323,40 @@ export default function ReviewPage() {
       await loadData()
     } catch {
       // ignore
+    }
+  }
+
+  async function pushToProcoreDirectory() {
+    setPushingDirectory(true)
+    setDirectoryMessage(null)
+    try {
+      const res = await fetch('/api/procore/directory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ submission_id: parseInt(id) }),
+      })
+      const body = await res.json().catch(() => ({} as Record<string, unknown>))
+      if (!res.ok) {
+        setDirectoryMessage({
+          kind: 'error',
+          text: (body.error as string) || `Push failed (HTTP ${res.status})`,
+        })
+        return
+      }
+      const fields = (body.updated_fields as string[] | undefined) ?? []
+      setDirectoryMessage({
+        kind: 'success',
+        text: `Pushed ${fields.length} field${fields.length === 1 ? '' : 's'} to Procore Directory${
+          body.vendor_resolved_by ? ` (matched by ${body.vendor_resolved_by})` : ''
+        }.`,
+      })
+    } catch (err) {
+      setDirectoryMessage({
+        kind: 'error',
+        text: err instanceof Error ? err.message : 'Push failed',
+      })
+    } finally {
+      setPushingDirectory(false)
     }
   }
 
@@ -552,6 +592,14 @@ export default function ReviewPage() {
           >
             Mark Reviewing
           </button>
+          <button
+            onClick={pushToProcoreDirectory}
+            disabled={pushingDirectory}
+            title="Push this sub's insurance info to the Procore company Directory"
+            className="bg-orange-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-orange-700 transition-colors disabled:opacity-50"
+          >
+            {pushingDirectory ? 'Pushing…' : 'Push to Procore'}
+          </button>
           {isAdmin && (
             <button
               onClick={deleteSubmission}
@@ -563,6 +611,18 @@ export default function ReviewPage() {
           )}
         </div>
       </div>
+
+      {directoryMessage && (
+        <div
+          className={`mb-6 rounded-lg border px-4 py-3 text-sm ${
+            directoryMessage.kind === 'success'
+              ? 'bg-green-50 border-green-200 text-green-700'
+              : 'bg-red-50 border-red-200 text-red-700'
+          }`}
+        >
+          {directoryMessage.text}
+        </div>
+      )}
 
       <div className="grid grid-cols-3 gap-6">
         <div className="col-span-2 space-y-6">
