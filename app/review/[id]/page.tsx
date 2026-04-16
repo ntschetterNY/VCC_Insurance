@@ -4,6 +4,23 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import StatusBadge from '@/components/StatusBadge'
 import Link from 'next/link'
+import { convertPdfToMarkdown } from '@/lib/pdfExtractClient'
+import {
+  LARGE_PDF_THRESHOLD,
+  isPdf,
+  isSupportedDoc,
+  formatSize,
+  extractErrorMessage,
+} from '@/lib/uploadHelpers'
+
+interface QueuedFile {
+  id: string
+  file: File
+  docType: string
+  originalFile?: File
+  status: 'ready' | 'converting' | 'error'
+  errorMessage?: string
+}
 
 interface ReviewerFlag {
   id: number
@@ -155,7 +172,8 @@ export default function ReviewPage() {
   const [uploadDragOver, setUploadDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
-  const [queuedFiles, setQueuedFiles] = useState<{ id: string; file: File; docType: string }[]>([])
+  const [queuedFiles, setQueuedFiles] = useState<QueuedFile[]>([])
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number; label: string } | null>(null)
   const [deletingDocId, setDeletingDocId] = useState<number | null>(null)
 
   const loadData = useCallback(async () => {
@@ -319,22 +337,64 @@ export default function ReviewPage() {
   }
 
   // --- Document upload handlers ---
-  const addFilesToQueue = useCallback((incoming: FileList | File[]) => {
-    const pdfFiles = Array.from(incoming).filter(
-      (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
-    )
-    if (pdfFiles.length === 0) {
-      setUploadError('Please upload PDF files only.')
-      return
+  // Large PDFs are parsed in the browser via pdfjs-dist and substituted
+  // with a Markdown File so the per-request body stays under Vercel's
+  // 4.5 MB limit. See lib/pdfExtractClient.ts.
+  const convertLargePdf = useCallback(async (entryId: string, originalFile: File) => {
+    try {
+      const mdFile = await convertPdfToMarkdown(originalFile)
+      setQueuedFiles((prev) =>
+        prev.map((f) =>
+          f.id === entryId
+            ? { ...f, file: mdFile, originalFile, status: 'ready' }
+            : f,
+        ),
+      )
+    } catch (err) {
+      console.error('Client-side PDF extraction failed:', err)
+      setQueuedFiles((prev) =>
+        prev.map((f) =>
+          f.id === entryId
+            ? {
+                ...f,
+                status: 'error',
+                errorMessage:
+                  err instanceof Error
+                    ? `Could not extract text: ${err.message}`
+                    : 'Could not extract text from PDF',
+              }
+            : f,
+        ),
+      )
     }
-    setUploadError('')
-    const entries = pdfFiles.map((file) => ({
-      id: `${file.name}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      file,
-      docType: '',
-    }))
-    setQueuedFiles((prev) => [...prev, ...entries])
   }, [])
+
+  const addFilesToQueue = useCallback(
+    (incoming: FileList | File[]) => {
+      const accepted = Array.from(incoming).filter(isSupportedDoc)
+      if (accepted.length === 0) {
+        setUploadError('Please upload PDF, Markdown, or text files.')
+        return
+      }
+      setUploadError('')
+      const entries: QueuedFile[] = accepted.map((file) => {
+        const needsConvert = isPdf(file) && file.size > LARGE_PDF_THRESHOLD
+        return {
+          id: `${file.name}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          file,
+          docType: '',
+          status: needsConvert ? 'converting' : 'ready',
+        }
+      })
+      setQueuedFiles((prev) => [...prev, ...entries])
+      for (const entry of entries) {
+        if (entry.status === 'converting') {
+          convertLargePdf(entry.id, entry.file)
+        }
+      }
+    },
+    [convertLargePdf],
+  )
 
   const removeQueuedFile = useCallback((fileId: string) => {
     setQueuedFiles((prev) => prev.filter((f) => f.id !== fileId))
@@ -344,29 +404,43 @@ export default function ReviewPage() {
     setQueuedFiles((prev) => prev.map((f) => f.id === fileId ? { ...f, docType } : f))
   }, [])
 
+  // Upload each queued file as its own request so no single POST exceeds
+  // Vercel's 4.5 MB body limit. Fail-fast on the first error; successful
+  // files stay on the submission so the user can retry the rest.
   const submitQueuedFiles = useCallback(async () => {
     if (queuedFiles.length === 0) return
+    if (queuedFiles.some((f) => f.status === 'converting')) {
+      setUploadError('Please wait — some files are still being extracted locally.')
+      return
+    }
+    if (queuedFiles.some((f) => f.status === 'error')) {
+      setUploadError('One or more files could not be processed. Remove them and try again.')
+      return
+    }
     setUploadError('')
     setUploading(true)
     try {
-      const fd = new FormData()
-      const docTypeMap: Record<string, string> = {}
-      for (const f of queuedFiles) {
+      for (let i = 0; i < queuedFiles.length; i++) {
+        const f = queuedFiles[i]
+        setUploadProgress({
+          current: i + 1,
+          total: queuedFiles.length,
+          label: `Uploading ${f.file.name} (${i + 1} of ${queuedFiles.length})...`,
+        })
+        const fd = new FormData()
         fd.append('files', f.file)
         if (f.docType) {
-          docTypeMap[f.file.name] = f.docType
+          fd.append('doc_types', JSON.stringify({ [f.file.name]: f.docType }))
         }
-      }
-      if (Object.keys(docTypeMap).length > 0) {
-        fd.append('doc_types', JSON.stringify(docTypeMap))
-      }
-      const res = await fetch(`/api/submissions/${id}/documents`, {
-        method: 'POST',
-        body: fd,
-      })
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        throw new Error(body.error || 'Upload failed')
+        const res = await fetch(`/api/submissions/${id}/documents`, {
+          method: 'POST',
+          body: fd,
+        })
+        if (!res.ok) {
+          throw new Error(
+            await extractErrorMessage(res, `Failed to upload "${f.file.name}"`),
+          )
+        }
       }
       setQueuedFiles([])
       await loadData()
@@ -374,6 +448,7 @@ export default function ReviewPage() {
       setUploadError(err instanceof Error ? err.message : 'Upload failed')
     } finally {
       setUploading(false)
+      setUploadProgress(null)
     }
   }, [queuedFiles, id, loadData])
 
@@ -1027,7 +1102,7 @@ export default function ReviewPage() {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".pdf"
+                  accept=".pdf,.md,.markdown,.txt,application/pdf,text/markdown,text/plain"
                   multiple
                   onChange={handleFileInputChange}
                   className="hidden"
@@ -1038,7 +1113,17 @@ export default function ReviewPage() {
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
-                    <p className="text-xs text-gray-500">Uploading & classifying...</p>
+                    <p className="text-xs text-gray-500">
+                      {uploadProgress?.label ?? 'Uploading & classifying...'}
+                    </p>
+                    {uploadProgress && (
+                      <div className="w-full max-w-xs h-1 bg-gray-200 rounded-full overflow-hidden mt-1">
+                        <div
+                          className="h-full bg-slate-700 transition-all duration-200"
+                          style={{ width: `${(uploadProgress.current / Math.max(uploadProgress.total, 1)) * 100}%` }}
+                        />
+                      </div>
+                    )}
                   </div>
                 ) : queuedFiles.length > 0 ? (
                   <div className="space-y-2 text-left" onClick={(e) => e.stopPropagation()}>
@@ -1054,39 +1139,68 @@ export default function ReviewPage() {
                         + Add more
                       </button>
                     </div>
-                    {queuedFiles.map((f) => (
-                      <div key={f.id} className="flex items-center gap-2 bg-white rounded-lg border border-gray-200 px-3 py-2">
-                        <svg className="w-3.5 h-3.5 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                          <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
-                        </svg>
-                        <span className="text-xs text-gray-700 truncate flex-1 min-w-0">{f.file.name}</span>
-                        <select
-                          value={f.docType}
-                          onChange={(e) => updateQueuedFileType(f.id, e.target.value)}
-                          className="border border-gray-300 rounded px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-slate-400 bg-white min-w-[100px]"
-                        >
-                          <option value="">Auto-detect</option>
-                          {ALL_DOC_TYPES.map((opt) => (
-                            <option key={opt.value} value={opt.value}>{opt.label}</option>
-                          ))}
-                        </select>
-                        <button
-                          type="button"
-                          onClick={() => removeQueuedFile(f.id)}
-                          className="text-gray-400 hover:text-red-500 transition-colors"
-                        >
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    {queuedFiles.map((f) => {
+                      const isMarkdown = /\.(md|markdown|txt)$/i.test(f.file.name)
+                      const iconColor = isMarkdown ? 'text-blue-500' : 'text-red-500'
+                      const rowBg =
+                        f.status === 'error'
+                          ? 'bg-red-50 border-red-200'
+                          : f.status === 'converting'
+                          ? 'bg-amber-50 border-amber-200'
+                          : 'bg-white border-gray-200'
+                      return (
+                        <div key={f.id} className={`flex items-center gap-2 rounded-lg border px-3 py-2 ${rowBg}`}>
+                          <svg className={`w-3.5 h-3.5 flex-shrink-0 ${iconColor}`} fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
                           </svg>
-                        </button>
-                      </div>
-                    ))}
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs text-gray-700 truncate">{f.file.name}</div>
+                            {f.status === 'converting' && (
+                              <div className="text-[11px] text-amber-700 mt-0.5">
+                                Extracting text locally from {formatSize(f.file.size)} PDF...
+                              </div>
+                            )}
+                            {f.status === 'error' && f.errorMessage && (
+                              <div className="text-[11px] text-red-700 mt-0.5">{f.errorMessage}</div>
+                            )}
+                            {f.status === 'ready' && f.originalFile && (
+                              <div className="text-[11px] text-gray-500 mt-0.5">
+                                Converted locally: {formatSize(f.originalFile.size)} PDF → {formatSize(f.file.size)} Markdown
+                              </div>
+                            )}
+                          </div>
+                          <select
+                            value={f.docType}
+                            onChange={(e) => updateQueuedFileType(f.id, e.target.value)}
+                            disabled={f.status !== 'ready'}
+                            className="border border-gray-300 rounded px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-slate-400 bg-white min-w-[100px] disabled:bg-gray-100 disabled:cursor-not-allowed"
+                          >
+                            <option value="">Auto-detect</option>
+                            {ALL_DOC_TYPES.map((opt) => (
+                              <option key={opt.value} value={opt.value}>{opt.label}</option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => removeQueuedFile(f.id)}
+                            className="text-gray-400 hover:text-red-500 transition-colors"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        </div>
+                      )
+                    })}
                     <button
                       type="button"
                       onClick={submitQueuedFiles}
-                      className="w-full bg-[#0f172a] text-white px-3 py-2 rounded-lg text-xs font-medium hover:bg-slate-700 transition-colors"
+                      disabled={queuedFiles.some((f) => f.status === 'converting' || f.status === 'error')}
+                      className="w-full bg-[#0f172a] text-white px-3 py-2 rounded-lg text-xs font-medium hover:bg-slate-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                     >
-                      Upload {queuedFiles.length} file{queuedFiles.length !== 1 ? 's' : ''}
+                      {queuedFiles.some((f) => f.status === 'converting')
+                        ? 'Extracting PDF text...'
+                        : `Upload ${queuedFiles.length} file${queuedFiles.length !== 1 ? 's' : ''}`}
                     </button>
                   </div>
                 ) : (
@@ -1095,10 +1209,10 @@ export default function ReviewPage() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                     </svg>
                     <p className="text-xs font-medium text-gray-600">
-                      Drop PDFs here or click to browse
+                      Drop PDFs or Markdown here, or click to browse
                     </p>
                     <p className="text-xs text-gray-400">
-                      Add more documents to this submission
+                      PDFs over 4 MB are extracted to Markdown in your browser
                     </p>
                   </div>
                 )}
