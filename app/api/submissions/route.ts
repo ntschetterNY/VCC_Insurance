@@ -8,13 +8,17 @@ export async function GET() {
       .from('submissions')
       .select(`
         id, status, uploaded_at, reviewed_at,
+        procore_project_id, procore_contract_id, project_id,
         subcontractors ( name, trade, tier )
       `)
       .order('uploaded_at', { ascending: false })
 
     if (error) throw error
 
-    // Flatten the joined subcontractor data
+    // Flatten the joined subcontractor data. Expose the Procore linkage
+    // fields so the dashboard can group second-tier subs under their
+    // primary (both share the same procore_contract_id when a commitment
+    // is selected on upload).
     const result = (submissions ?? []).map((s: Record<string, unknown>) => {
       const sub = s.subcontractors as Record<string, unknown> | null
       return {
@@ -25,6 +29,9 @@ export async function GET() {
         sub_name: sub?.name ?? '',
         trade: sub?.trade ?? '',
         tier: sub?.tier ?? '',
+        procore_project_id: s.procore_project_id ?? null,
+        procore_contract_id: s.procore_contract_id ?? null,
+        project_id: s.project_id ?? null,
       }
     })
 
