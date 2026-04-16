@@ -146,11 +146,18 @@ export async function POST(request: NextRequest) {
       const fileHash = generateFileHash(buffer)
       const storagePath = `${submissionId}/${fileHash}_${docType}_${safeName}`
 
+      // The storage path embeds the SHA-256 content hash, so an "already
+      // exists" collision means the existing blob is byte-identical. Treat it
+      // as success — we can't use `upsert: true` because the storage bucket
+      // RLS policy doesn't grant UPDATE to authenticated users (see
+      // supabase/migrations/001_initial_schema.sql).
       const { error: storageError } = await supabase.storage.from('documents').upload(storagePath, buffer, {
         contentType: 'application/pdf',
-        upsert: true,
       })
-      if (storageError) {
+      const isDuplicate =
+        storageError &&
+        /already exists|duplicate|resource already exists/i.test(storageError.message)
+      if (storageError && !isDuplicate) {
         console.error(`[Upload] Storage upload failed for "${file.name}":`, storageError)
         throw new Error(`Failed to store file "${file.name}": ${storageError.message}`)
       }

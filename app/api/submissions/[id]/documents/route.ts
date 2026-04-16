@@ -103,14 +103,19 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
         continue
       }
 
-      // `upsert: true` handles the case where a storage object was written on
-      // a prior attempt but the documents row never got inserted — identical
-      // content at the same path is safe to overwrite.
+      // The storage path embeds the SHA-256 content hash, so if a blob already
+      // exists at this path we know it has identical content. Treat "already
+      // exists" as success and recover by inserting the documents row below.
+      // (We can't use `upsert: true` — the storage bucket RLS policy grants
+      // INSERT/SELECT/DELETE to authenticated users but not UPDATE, so an
+      // upsert that hits an existing row fails with a row-level security error.)
       const { error: storageError } = await supabase.storage.from('documents').upload(storagePath, buffer, {
         contentType: 'application/pdf',
-        upsert: true,
       })
-      if (storageError) {
+      const isDuplicate =
+        storageError &&
+        /already exists|duplicate|resource already exists/i.test(storageError.message)
+      if (storageError && !isDuplicate) {
         console.error(`[Documents] Storage upload failed for "${file.name}":`, storageError)
         throw new Error(`Failed to store file "${file.name}": ${storageError.message}`)
       }
