@@ -10,9 +10,38 @@ import pdfParse from 'pdf-parse'
 export const maxDuration = 60
 
 // ---------------------------------------------------------------------------
-// Extract text from a PDF buffer server-side
+// Text-based formats are treated as already-extracted text — we skip
+// pdf-parse and read the buffer as UTF-8. This lets the client upload a
+// Markdown file (e.g. locally-extracted text from an oversized PDF) and
+// have it processed identically to an ACORD 25 / policy PDF.
 // ---------------------------------------------------------------------------
-async function extractTextFromBuffer(buffer: Buffer, maxChars = 8000): Promise<string> {
+function isTextDocument(filename: string, mimeType: string | undefined): boolean {
+  const n = filename.toLowerCase()
+  if (n.endsWith('.md') || n.endsWith('.markdown') || n.endsWith('.txt')) return true
+  if (mimeType === 'text/markdown' || mimeType === 'text/plain') return true
+  return false
+}
+
+function storageContentType(filename: string, mimeType: string | undefined): string {
+  const n = filename.toLowerCase()
+  if (n.endsWith('.md') || n.endsWith('.markdown')) return 'text/markdown'
+  if (n.endsWith('.txt')) return 'text/plain'
+  return mimeType || 'application/pdf'
+}
+
+// ---------------------------------------------------------------------------
+// Extract text from an uploaded document. For text formats we return the
+// raw UTF-8 contents; for PDFs we run pdf-parse.
+// ---------------------------------------------------------------------------
+async function extractTextFromBuffer(
+  buffer: Buffer,
+  filename: string,
+  mimeType: string | undefined,
+  maxChars = 8000,
+): Promise<string> {
+  if (isTextDocument(filename, mimeType)) {
+    return buffer.toString('utf8').slice(0, maxChars)
+  }
   try {
     const data = await pdfParse(buffer)
     return data.text.slice(0, maxChars)
@@ -132,8 +161,9 @@ export async function POST(request: NextRequest) {
     for (const file of uploadedFiles) {
       const buffer = Buffer.from(await file.arrayBuffer())
 
-      // 1. Extract text server-side
-      const text = await extractTextFromBuffer(buffer)
+      // 1. Extract text server-side (Markdown/text files are read directly;
+      //    PDFs go through pdf-parse)
+      const text = await extractTextFromBuffer(buffer, file.name, file.type)
 
       // 2. Classify — use manual type if provided, otherwise AI classify with
       // Haiku. All values run through coerceDocType() so unknown strings
@@ -166,7 +196,7 @@ export async function POST(request: NextRequest) {
       // RLS policy doesn't grant UPDATE to authenticated users (see
       // supabase/migrations/001_initial_schema.sql).
       const { error: storageError } = await supabase.storage.from('documents').upload(storagePath, buffer, {
-        contentType: 'application/pdf',
+        contentType: storageContentType(file.name, file.type),
       })
       const isDuplicate =
         storageError &&
