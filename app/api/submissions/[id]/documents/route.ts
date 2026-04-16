@@ -89,8 +89,26 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       const fileHash = generateFileHash(buffer)
       const storagePath = `${submissionId}/${fileHash}_${docType}_${safeName}`
 
+      // If this exact file is already recorded for this submission, treat as a
+      // no-op so retries after a partial failure (or accidental re-uploads of
+      // the same PDF) don't hard-fail the whole batch.
+      const { data: existingDoc } = await supabase
+        .from('documents')
+        .select('id, filename, doc_type')
+        .eq('submission_id', submissionId)
+        .eq('storage_path', storagePath)
+        .maybeSingle()
+      if (existingDoc) {
+        addedDocs.push(existingDoc)
+        continue
+      }
+
+      // `upsert: true` handles the case where a storage object was written on
+      // a prior attempt but the documents row never got inserted — identical
+      // content at the same path is safe to overwrite.
       const { error: storageError } = await supabase.storage.from('documents').upload(storagePath, buffer, {
         contentType: 'application/pdf',
+        upsert: true,
       })
       if (storageError) {
         console.error(`[Documents] Storage upload failed for "${file.name}":`, storageError)

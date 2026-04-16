@@ -148,6 +148,7 @@ export async function POST(request: NextRequest) {
 
       const { error: storageError } = await supabase.storage.from('documents').upload(storagePath, buffer, {
         contentType: 'application/pdf',
+        upsert: true,
       })
       if (storageError) {
         console.error(`[Upload] Storage upload failed for "${file.name}":`, storageError)
