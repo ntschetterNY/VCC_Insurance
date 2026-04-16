@@ -1,7 +1,15 @@
 -- ============================================================================
--- Migration 005 — Dashboard overview, Procore email generation, per-flag
+-- Migration 007 — Dashboard overview, Procore email generation, per-flag
 -- review workflow, user self-registration + admin approval, and
 -- admin-initiated user creation with first-login password set.
+--
+-- Run after 005_ensure_doc_type_constraint.sql and 006_ensure_post_002_schema.sql.
+--
+-- HOW TO RUN:
+--   1. Open the Supabase dashboard > SQL Editor.
+--   2. Paste this entire file and click "Run".
+--   3. Safe to re-run: every CREATE / ALTER uses IF NOT EXISTS guards and
+--      policies are dropped before being recreated.
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -20,9 +28,11 @@ CREATE TABLE IF NOT EXISTS public.projects (
 
 ALTER TABLE public.projects ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Authenticated users can read projects" ON public.projects;
 CREATE POLICY "Authenticated users can read projects" ON public.projects
   FOR SELECT USING (auth.role() = 'authenticated');
 
+DROP POLICY IF EXISTS "Authenticated users can manage projects" ON public.projects;
 CREATE POLICY "Authenticated users can manage projects" ON public.projects
   FOR ALL USING (auth.role() = 'authenticated');
 
@@ -94,6 +104,7 @@ ALTER TABLE public.registration_requests ENABLE ROW LEVEL SECURITY;
 
 -- Admins can read and manage registrations. Anonymous inserts are handled
 -- through the service-role API route (bypasses RLS); no public policy needed.
+DROP POLICY IF EXISTS "Admins can manage registrations" ON public.registration_requests;
 CREATE POLICY "Admins can manage registrations" ON public.registration_requests
   FOR ALL USING (
     EXISTS (SELECT 1 FROM public.users WHERE id = auth.uid() AND role = 'admin')
@@ -131,6 +142,7 @@ CREATE INDEX IF NOT EXISTS idx_email_log_status ON public.email_log(status);
 
 ALTER TABLE public.email_log ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Authenticated users can manage email_log" ON public.email_log;
 CREATE POLICY "Authenticated users can manage email_log" ON public.email_log
   FOR ALL USING (auth.role() = 'authenticated');
 
@@ -152,3 +164,28 @@ UPDATE public.submissions s
   FROM public.projects p
  WHERE s.procore_project_id = p.procore_project_id
    AND s.project_id IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- 8. Verification — run these after migration to confirm everything landed.
+--    (Safe to comment out; they only SELECT.)
+-- ---------------------------------------------------------------------------
+-- SELECT table_name FROM information_schema.tables
+--   WHERE table_schema = 'public'
+--     AND table_name IN ('projects', 'registration_requests', 'email_log');
+--
+-- SELECT column_name FROM information_schema.columns
+--   WHERE table_schema = 'public' AND table_name = 'submissions'
+--     AND column_name IN ('project_id','gl_expiration','wc_expiration',
+--                         'auto_expiration','umbrella_expiration','subcontractor_email');
+--
+-- SELECT column_name FROM information_schema.columns
+--   WHERE table_schema = 'public' AND table_name = 'reviewer_flags'
+--     AND column_name IN ('source','check_status','is_policy_issue',
+--                         'needs_collection','collection_item','resolution');
+--
+-- SELECT column_name FROM information_schema.columns
+--   WHERE table_schema = 'public' AND table_name = 'users'
+--     AND column_name IN ('status','must_change_password','created_by');
+--
+-- SELECT count(*) AS backfilled_projects FROM public.projects;
+
