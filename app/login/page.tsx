@@ -2,6 +2,7 @@
 
 import { useState, FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
+import { APP_VERSION } from '@/lib/version'
 
 type LoginStep = 'credentials' | 'mfa'
 
@@ -188,7 +189,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-center text-xs text-slate-500 mt-6">
-          VCC Insurance v2.0 &mdash; Secured with 2FA
+          VCC Insurance v{APP_VERSION} &mdash; Secured with 2FA
         </p>
       </div>
     </div>

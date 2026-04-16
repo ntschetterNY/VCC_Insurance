@@ -164,7 +164,10 @@ export async function POST(request: NextRequest) {
         throw new Error(`Failed to store file "${file.name}": ${storageError.message}`)
       }
 
-      // 4. Insert document record
+      // 4. Insert document record. Log the final docType right before writing
+      // so any future CHECK-constraint violation is immediately diagnosable
+      // from Vercel function logs.
+      console.log(`[Upload] Inserting "${file.name}" with doc_type="${docType}"`)
       const { error: docInsertError } = await supabase.from('documents').insert({
         submission_id: submissionId,
         doc_type: docType,
