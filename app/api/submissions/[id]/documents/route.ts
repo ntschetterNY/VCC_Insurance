@@ -8,7 +8,31 @@ import pdfParse from 'pdf-parse'
 // Allow up to 60s for PDF extraction + AI classification
 export const maxDuration = 60
 
-async function extractTextFromBuffer(buffer: Buffer, maxChars = 8000): Promise<string> {
+// Text-based formats (Markdown/plain text) are stored and classified
+// without running pdf-parse — the buffer is already plain text.
+function isTextDocument(filename: string, mimeType: string | undefined): boolean {
+  const n = filename.toLowerCase()
+  if (n.endsWith('.md') || n.endsWith('.markdown') || n.endsWith('.txt')) return true
+  if (mimeType === 'text/markdown' || mimeType === 'text/plain') return true
+  return false
+}
+
+function storageContentType(filename: string, mimeType: string | undefined): string {
+  const n = filename.toLowerCase()
+  if (n.endsWith('.md') || n.endsWith('.markdown')) return 'text/markdown'
+  if (n.endsWith('.txt')) return 'text/plain'
+  return mimeType || 'application/pdf'
+}
+
+async function extractTextFromBuffer(
+  buffer: Buffer,
+  filename: string,
+  mimeType: string | undefined,
+  maxChars = 8000,
+): Promise<string> {
+  if (isTextDocument(filename, mimeType)) {
+    return buffer.toString('utf8').slice(0, maxChars)
+  }
   try {
     const data = await pdfParse(buffer)
     return data.text.slice(0, maxChars)
@@ -68,7 +92,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
     for (const file of uploadedFiles) {
       const buffer = Buffer.from(await file.arrayBuffer())
-      const text = await extractTextFromBuffer(buffer)
+      const text = await extractTextFromBuffer(buffer, file.name, file.type)
 
       // Classify — use manual type if provided, otherwise AI classify. All
       // values run through coerceDocType() so unknown strings become "other"
@@ -112,7 +136,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       // INSERT/SELECT/DELETE to authenticated users but not UPDATE, so an
       // upsert that hits an existing row fails with a row-level security error.)
       const { error: storageError } = await supabase.storage.from('documents').upload(storagePath, buffer, {
-        contentType: 'application/pdf',
+        contentType: storageContentType(file.name, file.type),
       })
       const isDuplicate =
         storageError &&

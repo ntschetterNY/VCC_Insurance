@@ -6,6 +6,11 @@ import {
   classifyTrade,
   getTradeOptions,
 } from '@/lib/scheduleClassification'
+import { convertPdfToMarkdown } from '@/lib/pdfExtractClient'
+
+// Files larger than this are converted to Markdown in the browser before
+// upload, to stay under Vercel's 4.5 MB serverless body limit.
+const LARGE_PDF_THRESHOLD = 4 * 1024 * 1024 // 4 MB
 
 interface Subcontractor {
   id: number
@@ -53,6 +58,29 @@ interface QueuedFile {
   id: string
   file: File
   docType: string
+  // When a large PDF was converted client-side, we keep a reference to
+  // the original so the UI can show "11 MB PDF → 42 KB Markdown".
+  originalFile?: File
+  status: 'ready' | 'converting' | 'error'
+  errorMessage?: string
+}
+
+function isPdf(file: File): boolean {
+  return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+}
+
+function isSupportedDoc(file: File): boolean {
+  if (isPdf(file)) return true
+  const n = file.name.toLowerCase()
+  if (n.endsWith('.md') || n.endsWith('.markdown') || n.endsWith('.txt')) return true
+  if (file.type === 'text/markdown' || file.type === 'text/plain') return true
+  return false
+}
+
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${bytes} B`
 }
 
 function formatCurrency(v: number) {
@@ -165,24 +193,68 @@ export default function UploadPage() {
   )
 
   // -------------------------------------------------------------------------
-  // Add files (from drop or picker)
+  // Add files (from drop or picker). Accepts PDF, Markdown (.md/.markdown),
+  // and plain text (.txt). Large PDFs are converted to Markdown locally —
+  // see `convertLargePdf` below.
   // -------------------------------------------------------------------------
-  const addFiles = useCallback((newFiles: FileList | File[]) => {
-    const pdfFiles = Array.from(newFiles).filter(
-      (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
-    )
-    if (pdfFiles.length === 0) {
-      setError('Please upload PDF files only.')
-      return
+  const convertLargePdf = useCallback(async (entryId: string, originalFile: File) => {
+    try {
+      const mdFile = await convertPdfToMarkdown(originalFile)
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === entryId
+            ? { ...f, file: mdFile, originalFile, status: 'ready' }
+            : f,
+        ),
+      )
+    } catch (err) {
+      console.error('Client-side PDF extraction failed:', err)
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === entryId
+            ? {
+                ...f,
+                status: 'error',
+                errorMessage:
+                  err instanceof Error
+                    ? `Could not extract text: ${err.message}`
+                    : 'Could not extract text from PDF',
+              }
+            : f,
+        ),
+      )
     }
-    setError('')
-    const entries: QueuedFile[] = pdfFiles.map((file) => ({
-      id: `${file.name}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      file,
-      docType: '',
-    }))
-    setFiles((prev) => [...prev, ...entries])
   }, [])
+
+  const addFiles = useCallback(
+    (newFiles: FileList | File[]) => {
+      const accepted = Array.from(newFiles).filter(isSupportedDoc)
+      if (accepted.length === 0) {
+        setError('Please upload PDF, Markdown, or text files.')
+        return
+      }
+      setError('')
+      const entries: QueuedFile[] = accepted.map((file) => {
+        const needsConvert = isPdf(file) && file.size > LARGE_PDF_THRESHOLD
+        return {
+          id: `${file.name}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          file,
+          docType: '',
+          status: needsConvert ? 'converting' : 'ready',
+        }
+      })
+      setFiles((prev) => [...prev, ...entries])
+
+      // Kick off client-side text extraction for every oversized PDF. The
+      // queued entry is updated in place once conversion finishes.
+      for (const entry of entries) {
+        if (entry.status === 'converting') {
+          convertLargePdf(entry.id, entry.file)
+        }
+      }
+    },
+    [convertLargePdf],
+  )
 
   // Drag & drop handlers
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -225,6 +297,14 @@ export default function UploadPage() {
 
     if (files.length === 0) {
       setError('Please upload at least one document.')
+      return
+    }
+    if (files.some((f) => f.status === 'converting')) {
+      setError('Please wait — some files are still being extracted locally.')
+      return
+    }
+    if (files.some((f) => f.status === 'error')) {
+      setError('One or more files could not be processed. Remove them and try again.')
       return
     }
     if (!useExisting && !name.trim()) {
@@ -569,7 +649,7 @@ export default function UploadPage() {
             <input
               ref={fileInputRef}
               type="file"
-              accept=".pdf"
+              accept=".pdf,.md,.markdown,.txt,application/pdf,text/markdown,text/plain"
               multiple
               onChange={handleFileSelect}
               className="hidden"
@@ -580,10 +660,10 @@ export default function UploadPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
               </svg>
               <p className="text-sm font-medium text-gray-600">
-                Drop PDF files here, or click to browse
+                Drop PDF or Markdown files here, or click to browse
               </p>
               <p className="text-xs text-gray-400">
-                ACORD 25, Policies, Endorsements — drop them all
+                ACORD 25, Policies, Endorsements — PDFs over 4 MB are extracted to Markdown in your browser
               </p>
             </div>
           </div>
@@ -598,36 +678,62 @@ export default function UploadPage() {
               </p>
               <p className="text-xs text-gray-400">Assign document types or leave as Auto-detect</p>
             </div>
-            {files.map((f) => (
-              <div
-                key={f.id}
-                className="flex items-center gap-3 bg-gray-50 rounded-lg border border-gray-200 px-4 py-2.5"
-              >
-                <svg className="w-4 h-4 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
-                </svg>
-                <span className="text-sm text-gray-700 truncate flex-1 min-w-0">{f.file.name}</span>
-                <select
-                  value={f.docType}
-                  onChange={(e) => updateFileType(f.id, e.target.value)}
-                  className="border border-gray-300 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-slate-500 bg-white min-w-[130px]"
+            {files.map((f) => {
+              const isMarkdown = /\.(md|markdown|txt)$/i.test(f.file.name)
+              const iconColor = isMarkdown ? 'text-blue-500' : 'text-red-500'
+              return (
+                <div
+                  key={f.id}
+                  className={`flex items-center gap-3 rounded-lg border px-4 py-2.5 ${
+                    f.status === 'error'
+                      ? 'bg-red-50 border-red-200'
+                      : f.status === 'converting'
+                      ? 'bg-amber-50 border-amber-200'
+                      : 'bg-gray-50 border-gray-200'
+                  }`}
                 >
-                  {DOC_TYPE_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>{opt.label}</option>
-                  ))}
-                </select>
-                <span className="text-xs text-gray-400 whitespace-nowrap">{(f.file.size / 1024).toFixed(0)} KB</span>
-                <button
-                  type="button"
-                  onClick={() => removeFile(f.id)}
-                  className="text-gray-400 hover:text-red-500 transition-colors"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  <svg className={`w-4 h-4 ${iconColor} flex-shrink-0`} fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
                   </svg>
-                </button>
-              </div>
-            ))}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-gray-700 truncate">{f.file.name}</div>
+                    {f.status === 'converting' && (
+                      <div className="text-xs text-amber-700 mt-0.5">
+                        Extracting text locally from {formatSize(f.file.size)} PDF...
+                      </div>
+                    )}
+                    {f.status === 'error' && f.errorMessage && (
+                      <div className="text-xs text-red-700 mt-0.5">{f.errorMessage}</div>
+                    )}
+                    {f.status === 'ready' && f.originalFile && (
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        Converted locally: {formatSize(f.originalFile.size)} PDF → {formatSize(f.file.size)} Markdown
+                      </div>
+                    )}
+                  </div>
+                  <select
+                    value={f.docType}
+                    onChange={(e) => updateFileType(f.id, e.target.value)}
+                    disabled={f.status !== 'ready'}
+                    className="border border-gray-300 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-slate-500 bg-white min-w-[130px] disabled:bg-gray-100 disabled:cursor-not-allowed"
+                  >
+                    {DOC_TYPE_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                  <span className="text-xs text-gray-400 whitespace-nowrap">{formatSize(f.file.size)}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeFile(f.id)}
+                    className="text-gray-400 hover:text-red-500 transition-colors"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              )
+            })}
           </div>
         )}
 
@@ -641,10 +747,18 @@ export default function UploadPage() {
           <div className="flex items-center gap-3">
             <button
               type="submit"
-              disabled={submitting || files.length === 0}
+              disabled={
+                submitting ||
+                files.length === 0 ||
+                files.some((f) => f.status === 'converting' || f.status === 'error')
+              }
               className="bg-[#0f172a] text-white px-6 py-2.5 rounded-lg text-sm font-medium hover:bg-slate-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              {submitting ? 'Uploading & Analyzing...' : 'Submit for Review'}
+              {submitting
+                ? 'Uploading & Analyzing...'
+                : files.some((f) => f.status === 'converting')
+                ? 'Extracting PDF text...'
+                : 'Submit for Review'}
             </button>
             <button
               type="button"
