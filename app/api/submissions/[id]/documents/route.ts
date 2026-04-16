@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
-import { classifyDocument } from '@/lib/ai'
+import { classifyDocument, coerceDocType, legacyDocTypeFallback } from '@/lib/ai'
 import { generateFileHash } from '@/lib/security'
 import pdfParse from 'pdf-parse'
 
@@ -70,11 +70,13 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       const buffer = Buffer.from(await file.arrayBuffer())
       const text = await extractTextFromBuffer(buffer)
 
-      // Classify — use manual type if provided, otherwise AI classify
-      let docType = 'other'
+      // Classify — use manual type if provided, otherwise AI classify. All
+      // values run through coerceDocType() so unknown strings become "other"
+      // and can never violate the documents_doc_type_check constraint.
+      let docType: string = 'other'
       const manualType = manualDocTypes[file.name]
       if (manualType) {
-        docType = manualType
+        docType = coerceDocType(manualType)
       } else if (text && text.trim().length >= 20) {
         try {
           const classification = await classifyDocument(text, submissionId, classificationHints)
@@ -120,15 +122,44 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
         throw new Error(`Failed to store file "${file.name}": ${storageError.message}`)
       }
 
-      // Insert document record
-      const { data: doc, error: docInsertError } = await supabase.from('documents').insert({
+      // Insert document record. Log the final docType right before writing so
+      // any future CHECK-constraint violation is immediately diagnosable from
+      // Vercel function logs.
+      console.log(`[Documents] Inserting "${file.name}" with doc_type="${docType}"`)
+      const docRow = {
         submission_id: submissionId,
         doc_type: docType,
         filename: file.name,
         storage_path: storagePath,
         extracted_text: text || null,
         processed_at: new Date().toISOString(),
-      }).select('id, filename, doc_type').single()
+      }
+      let { data: doc, error: docInsertError } = await supabase
+        .from('documents')
+        .insert(docRow)
+        .select('id, filename, doc_type')
+        .single()
+
+      // If the DB's doc_type CHECK constraint hasn't been upgraded (i.e.
+      // migration 005/002 wasn't applied), retry with the legacy-compatible
+      // value so the upload still succeeds. The reviewer can reclassify once
+      // the migration is applied.
+      if (docInsertError && /documents_doc_type_check/i.test(docInsertError.message)) {
+        const fallback = legacyDocTypeFallback(docType)
+        console.warn(
+          `[Documents] documents_doc_type_check rejected "${docType}" for "${file.name}". ` +
+            `The DB is running an old schema — apply supabase/migrations/005_ensure_doc_type_constraint.sql. ` +
+            `Retrying with legacy-compatible doc_type="${fallback}".`,
+        )
+        const retry = await supabase
+          .from('documents')
+          .insert({ ...docRow, doc_type: fallback })
+          .select('id, filename, doc_type')
+          .single()
+        doc = retry.data
+        docInsertError = retry.error
+      }
+
       if (docInsertError) {
         console.error(`[Documents] Document insert failed for "${file.name}":`, docInsertError)
         throw new Error(`Failed to save document record for "${file.name}": ${docInsertError.message}`)
