@@ -1,7 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
-import { isValidDocType } from '@/lib/ai'
+
+const VALID_DOC_TYPES = [
+  'accord25',
+  'accord28',
+  'policy_gl',
+  'policy_excess',
+  'policy_wc',
+  'policy_auto',
+  'endorsement',
+  'contract',
+  'other',
+]
 
 const DOC_TYPE_LABELS: Record<string, string> = {
   accord25: 'Accord 25',
@@ -24,7 +35,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     const id = parseInt(params.id)
     const body = await req.json() as { doc_type?: string }
 
-    if (!body.doc_type || !isValidDocType(body.doc_type)) {
+    if (!body.doc_type || !VALID_DOC_TYPES.includes(body.doc_type)) {
       return NextResponse.json({ error: 'Invalid document type' }, { status: 400 })
     }
 

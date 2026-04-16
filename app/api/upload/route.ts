@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
-import { classifyDocument, analyzeAccord25, getAndClearUsageBuffer, coerceDocType, legacyDocTypeFallback } from '@/lib/ai'
+import { classifyDocument, analyzeAccord25, getAndClearUsageBuffer } from '@/lib/ai'
 import { sanitizeString, generateFileHash } from '@/lib/security'
 import { classifyTrade } from '@/lib/scheduleClassification'
 import pdfParse from 'pdf-parse'
@@ -123,13 +123,11 @@ export async function POST(request: NextRequest) {
       // 1. Extract text server-side
       const text = await extractTextFromBuffer(buffer)
 
-      // 2. Classify — use manual type if provided, otherwise AI classify with
-      // Haiku. All values run through coerceDocType() so unknown strings
-      // become "other" and can never violate documents_doc_type_check.
-      let docType: string = 'other'
+      // 2. Classify — use manual type if provided, otherwise AI classify with Haiku
+      let docType = 'other'
       const manualType = manualDocTypes[file.name]
       if (manualType) {
-        docType = coerceDocType(manualType)
+        docType = manualType
         console.log(`[Upload] Using manual type for "${file.name}": ${docType}`)
       } else if (text && text.trim().length >= 20) {
         try {
@@ -164,35 +162,15 @@ export async function POST(request: NextRequest) {
         throw new Error(`Failed to store file "${file.name}": ${storageError.message}`)
       }
 
-      // 4. Insert document record. Log the final docType right before writing
-      // so any future CHECK-constraint violation is immediately diagnosable
-      // from Vercel function logs.
-      console.log(`[Upload] Inserting "${file.name}" with doc_type="${docType}"`)
-      const docRow = {
+      // 4. Insert document record
+      const { error: docInsertError } = await supabase.from('documents').insert({
         submission_id: submissionId,
         doc_type: docType,
         filename: file.name,
         storage_path: storagePath,
         extracted_text: text || null,
         processed_at: new Date().toISOString(),
-      }
-      let { error: docInsertError } = await supabase.from('documents').insert(docRow)
-
-      // If the DB's doc_type CHECK constraint hasn't been upgraded (i.e.
-      // migration 005/002 wasn't applied), retry with the legacy-compatible
-      // value so the upload still succeeds. The reviewer can reclassify once
-      // the migration is applied.
-      if (docInsertError && /documents_doc_type_check/i.test(docInsertError.message)) {
-        const fallback = legacyDocTypeFallback(docType)
-        console.warn(
-          `[Upload] documents_doc_type_check rejected "${docType}" for "${file.name}". ` +
-            `The DB is running an old schema — apply supabase/migrations/005_ensure_doc_type_constraint.sql. ` +
-            `Retrying with legacy-compatible doc_type="${fallback}".`,
-        )
-        const retry = await supabase.from('documents').insert({ ...docRow, doc_type: fallback })
-        docInsertError = retry.error
-      }
-
+      })
       if (docInsertError) {
         console.error(`[Upload] Document insert failed for "${file.name}":`, docInsertError)
         throw new Error(`Failed to save document record for "${file.name}": ${docInsertError.message}`)
@@ -261,21 +239,10 @@ export async function POST(request: NextRequest) {
         raw_response: analysis,
       }, { onConflict: 'submission_id' })
     } catch (aiError) {
-      // Log full diagnostic context — the actual error category will be
-      // shown to the user when they click "Re-run Analysis" via
-      // /api/analysis/[id], which has rich error categorization.
-      const e = aiError as { status?: number; error?: { type?: string; message?: string } }
-      console.error('[Upload] AI analysis failed during upload:', {
-        message: aiError instanceof Error ? aiError.message : String(aiError),
-        http_status: e.status,
-        provider_error_type: e.error?.type,
-        provider_error_message: e.error?.message,
-      })
+      console.error('AI analysis failed:', aiError)
       await supabase.from('ai_analysis').insert({
         submission_id: submissionId,
-        issues: [
-          'AI analysis failed during upload — click "Re-run Analysis" to see the detailed error.',
-        ],
+        issues: ['AI analysis failed — please re-run manually'],
       })
     }
 

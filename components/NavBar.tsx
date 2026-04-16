@@ -3,7 +3,6 @@
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useState, useEffect } from 'react'
-import { APP_VERSION } from '@/lib/version'
 
 const adminLinks = [
   { href: '/admin/users', label: 'Users', icon: (
@@ -81,10 +80,7 @@ export default function NavBar() {
           </div>
           <div>
             <h1 className="text-sm font-bold text-white leading-tight">VCC Insurance</h1>
-            <p className="text-[10px] text-slate-400">
-              Subcontractor Portal
-              <span className="ml-1 text-slate-500">v{APP_VERSION}</span>
-            </p>
+            <p className="text-[10px] text-slate-400">Subcontractor Portal</p>
           </div>
         </div>
       </div>
@@ -164,7 +160,7 @@ export default function NavBar() {
             </button>
           </div>
         ) : (
-          <p className="text-xs text-slate-500">VCC Insurance v{APP_VERSION}</p>
+          <p className="text-xs text-slate-500">VCC Insurance v1.0</p>
         )}
       </div>
     </aside>

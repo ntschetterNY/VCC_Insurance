@@ -120,11 +120,6 @@ export default function ReviewPage() {
   const [actionLoading, setActionLoading] = useState(false)
   const [reviewerNotes, setReviewerNotes] = useState('')
   const [reanalyzing, setReanalyzing] = useState(false)
-  const [analysisError, setAnalysisError] = useState<{
-    error: string
-    hint?: string
-    debug?: Record<string, unknown>
-  } | null>(null)
   const [assignedTo, setAssignedTo] = useState<number | ''>('')
   const [deleting, setDeleting] = useState(false)
 
@@ -204,26 +199,9 @@ export default function ReviewPage() {
 
   async function reanalyze() {
     setReanalyzing(true)
-    setAnalysisError(null)
     try {
-      const res = await fetch(`/api/analysis/${id}`, { method: 'POST' })
-      const body = await res.json().catch(() => ({} as Record<string, unknown>))
-      if (!res.ok) {
-        setAnalysisError({
-          error: (body.error as string) || `Analysis request failed (HTTP ${res.status})`,
-          hint: body.hint as string | undefined,
-          debug: body.debug as Record<string, unknown> | undefined,
-        })
-        return
-      }
+      await fetch(`/api/analysis/${id}`, { method: 'POST' })
       await loadData()
-    } catch (err) {
-      // Network failure / aborted request — never reached the server.
-      setAnalysisError({
-        error: 'Could not reach the analysis endpoint.',
-        hint: 'The browser request to /api/analysis failed before getting a response. Check your network connection and that the Vercel deployment is up.',
-        debug: { client_error: err instanceof Error ? err.message : String(err) },
-      })
     } finally {
       setReanalyzing(false)
     }
@@ -468,26 +446,6 @@ export default function ReviewPage() {
                 {reanalyzing ? 'Re-analyzing…' : 'Re-run Analysis'}
               </button>
             </div>
-
-            {analysisError && (
-              <div className="mx-6 mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm">
-                <p className="font-semibold text-red-800">AI Analysis failed</p>
-                <p className="mt-1 text-red-700">{analysisError.error}</p>
-                {analysisError.hint && (
-                  <p className="mt-2 text-red-700">
-                    <span className="font-semibold">How to fix:</span> {analysisError.hint}
-                  </p>
-                )}
-                {analysisError.debug && (
-                  <details className="mt-2 text-red-700">
-                    <summary className="cursor-pointer text-xs font-semibold">Debug details</summary>
-                    <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-red-100 p-2 text-[11px]">
-                      {JSON.stringify(analysisError.debug, null, 2)}
-                    </pre>
-                  </details>
-                )}
-              </div>
-            )}
 
             {!analysis ? (
               <div className="px-6 py-8 text-center text-gray-500">

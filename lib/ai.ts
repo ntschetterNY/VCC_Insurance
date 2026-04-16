@@ -56,56 +56,16 @@ export function getAndClearUsageBuffer(): UsageEntry[] {
 // ---------------------------------------------------------------------------
 // Document classification types
 // ---------------------------------------------------------------------------
-// Canonical list of valid doc_type values. Must stay in sync with the
-// `documents_doc_type_check` CHECK constraint defined in
-// supabase/migrations/002_expand_doc_types.sql. This is the SINGLE SOURCE OF
-// TRUTH — import it anywhere a doc_type is produced (AI classification,
-// manual form input, reclassification) and validate before writing to the DB
-// so we can never violate the CHECK constraint regardless of what the LLM
-// hallucinates or what a future client change sends.
-export const VALID_DOC_TYPES = [
-  'accord25',
-  'accord28',
-  'policy',
-  'policy_gl',
-  'policy_excess',
-  'policy_wc',
-  'policy_auto',
-  'endorsement',
-  'contract',
-  'other',
-] as const
-
-export type DocClassification = typeof VALID_DOC_TYPES[number]
-
-export function isValidDocType(value: unknown): value is DocClassification {
-  return typeof value === 'string' && (VALID_DOC_TYPES as readonly string[]).includes(value)
-}
-
-/**
- * Coerce any string to a valid doc_type. Unknown values fall back to
- * 'other' so they can still be stored and later reclassified by a reviewer.
- */
-export function coerceDocType(value: unknown): DocClassification {
-  return isValidDocType(value) ? value : 'other'
-}
-
-/**
- * Fallback mapping to the ORIGINAL migration-001 constraint
- * (`CHECK (doc_type IN ('accord25', 'policy'))`) for the case where
- * migration 002 was never applied to the Supabase database and the DB
- * rejects the expanded doc_type values.
- *
- * We only use this when an INSERT fails with a CHECK-constraint error —
- * it's a graceful degradation so uploads still succeed, at the cost of
- * losing granularity (everything policy-ish collapses to 'policy'). A
- * reviewer can then reclassify once migration 005 has been applied.
- *
- * See supabase/migrations/005_ensure_doc_type_constraint.sql for the fix.
- */
-export function legacyDocTypeFallback(value: string): 'accord25' | 'policy' {
-  return value === 'accord25' || value === 'accord28' ? 'accord25' : 'policy'
-}
+export type DocClassification =
+  | 'accord25'
+  | 'accord28'
+  | 'policy_gl'
+  | 'policy_excess'
+  | 'policy_wc'
+  | 'policy_auto'
+  | 'endorsement'
+  | 'contract'
+  | 'other'
 
 export interface ClassificationResult {
   doc_type: DocClassification
@@ -168,15 +128,7 @@ Classification rules:
   }
 
   try {
-    const parsed = JSON.parse(jsonMatch[0]) as Partial<ClassificationResult>
-    // The LLM occasionally invents types (e.g. "binder", "policy_umbrella",
-    // the human-readable label, or a pipe-separated string) — coerce anything
-    // outside the whitelist to "other" so the DB CHECK constraint never trips.
-    return {
-      doc_type: coerceDocType(parsed.doc_type),
-      confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,
-      description: typeof parsed.description === 'string' ? parsed.description : '',
-    }
+    return JSON.parse(jsonMatch[0]) as ClassificationResult
   } catch {
     return { doc_type: 'other', confidence: 0, description: 'Classification parse error' }
   }
