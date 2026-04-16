@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
-import { classifyDocument } from '@/lib/ai'
+import { classifyDocument, coerceDocType } from '@/lib/ai'
 import { generateFileHash } from '@/lib/security'
 import pdfParse from 'pdf-parse'
 
@@ -70,11 +70,13 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       const buffer = Buffer.from(await file.arrayBuffer())
       const text = await extractTextFromBuffer(buffer)
 
-      // Classify — use manual type if provided, otherwise AI classify
-      let docType = 'other'
+      // Classify — use manual type if provided, otherwise AI classify. All
+      // values run through coerceDocType() so unknown strings become "other"
+      // and can never violate the documents_doc_type_check constraint.
+      let docType: string = 'other'
       const manualType = manualDocTypes[file.name]
       if (manualType) {
-        docType = manualType
+        docType = coerceDocType(manualType)
       } else if (text && text.trim().length >= 20) {
         try {
           const classification = await classifyDocument(text, submissionId, classificationHints)

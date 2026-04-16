@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { requireAuth } from '@/lib/auth'
-import { classifyDocument, analyzeAccord25, getAndClearUsageBuffer } from '@/lib/ai'
+import { classifyDocument, analyzeAccord25, getAndClearUsageBuffer, coerceDocType } from '@/lib/ai'
 import { sanitizeString, generateFileHash } from '@/lib/security'
 import { classifyTrade } from '@/lib/scheduleClassification'
 import pdfParse from 'pdf-parse'
@@ -123,11 +123,13 @@ export async function POST(request: NextRequest) {
       // 1. Extract text server-side
       const text = await extractTextFromBuffer(buffer)
 
-      // 2. Classify — use manual type if provided, otherwise AI classify with Haiku
-      let docType = 'other'
+      // 2. Classify — use manual type if provided, otherwise AI classify with
+      // Haiku. All values run through coerceDocType() so unknown strings
+      // become "other" and can never violate documents_doc_type_check.
+      let docType: string = 'other'
       const manualType = manualDocTypes[file.name]
       if (manualType) {
-        docType = manualType
+        docType = coerceDocType(manualType)
         console.log(`[Upload] Using manual type for "${file.name}": ${docType}`)
       } else if (text && text.trim().length >= 20) {
         try {

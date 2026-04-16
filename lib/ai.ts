@@ -56,16 +56,39 @@ export function getAndClearUsageBuffer(): UsageEntry[] {
 // ---------------------------------------------------------------------------
 // Document classification types
 // ---------------------------------------------------------------------------
-export type DocClassification =
-  | 'accord25'
-  | 'accord28'
-  | 'policy_gl'
-  | 'policy_excess'
-  | 'policy_wc'
-  | 'policy_auto'
-  | 'endorsement'
-  | 'contract'
-  | 'other'
+// Canonical list of valid doc_type values. Must stay in sync with the
+// `documents_doc_type_check` CHECK constraint defined in
+// supabase/migrations/002_expand_doc_types.sql. This is the SINGLE SOURCE OF
+// TRUTH — import it anywhere a doc_type is produced (AI classification,
+// manual form input, reclassification) and validate before writing to the DB
+// so we can never violate the CHECK constraint regardless of what the LLM
+// hallucinates or what a future client change sends.
+export const VALID_DOC_TYPES = [
+  'accord25',
+  'accord28',
+  'policy',
+  'policy_gl',
+  'policy_excess',
+  'policy_wc',
+  'policy_auto',
+  'endorsement',
+  'contract',
+  'other',
+] as const
+
+export type DocClassification = typeof VALID_DOC_TYPES[number]
+
+export function isValidDocType(value: unknown): value is DocClassification {
+  return typeof value === 'string' && (VALID_DOC_TYPES as readonly string[]).includes(value)
+}
+
+/**
+ * Coerce any string to a valid doc_type. Unknown values fall back to
+ * 'other' so they can still be stored and later reclassified by a reviewer.
+ */
+export function coerceDocType(value: unknown): DocClassification {
+  return isValidDocType(value) ? value : 'other'
+}
 
 export interface ClassificationResult {
   doc_type: DocClassification
@@ -128,7 +151,15 @@ Classification rules:
   }
 
   try {
-    return JSON.parse(jsonMatch[0]) as ClassificationResult
+    const parsed = JSON.parse(jsonMatch[0]) as Partial<ClassificationResult>
+    // The LLM occasionally invents types (e.g. "binder", "policy_umbrella",
+    // the human-readable label, or a pipe-separated string) — coerce anything
+    // outside the whitelist to "other" so the DB CHECK constraint never trips.
+    return {
+      doc_type: coerceDocType(parsed.doc_type),
+      confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,
+      description: typeof parsed.description === 'string' ? parsed.description : '',
+    }
   } catch {
     return { doc_type: 'other', confidence: 0, description: 'Classification parse error' }
   }
